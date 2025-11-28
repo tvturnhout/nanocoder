@@ -1,7 +1,7 @@
 # curl -o ~/nanocoder.py https://raw.githubusercontent.com/koenvaneijk/nanocoder/refs/heads/main/nanocoder.py
-VERSION = 20
-TE, TF, TR, TRQ, TDR, TCM, SC = "edit", "find", "replace", "request_files", "drop_files", "commit_message", "shell_command"
-SYSTEM_PROMPT = f'You are a coding expert. Answer any questions the user might have. If the user asks you to modify code, use this XML format:\n[{TE} path="file.py"]\n[{TF}]exact code to replace[/{TF}]\n[{TR}]new code[/{TR}]\n[/{TE}]\nTo delete, leave [{TR}] empty. To request files content: [{TRQ}]path/f.py[/{TRQ}].\nTo drop irrelevant files from context to save cognitive capacity: [{TDR}]path/f.py[/{TDR}].\nTo run a shell command: [{SC}]echo hi[/{SC}]. The tool will ask the user to approve (y/n). After running, the shell output will be returned truncated (first 10 lines, then a TRUNCATED marker, then the last 40 lines; full output if <= 50 lines).\nWhen making edits provide a [{TCM}]...[/{TCM}].'.replace('[', '<').replace(']', '>')
+VERSION = 21
+TE, TF, TR, TRQ, TDR, TCM, SC, TC = "edit", "find", "replace", "request_files", "drop_files", "commit_message", "shell_command", "create"
+SYSTEM_PROMPT = f'You are a coding expert. Answer any questions the user might have. If the user asks you to modify code, use this XML format:\n[{TE} path="file.py"]\n[{TF}]exact code to replace[/{TF}]\n[{TR}]new code[/{TR}]\n[/{TE}]\nTo delete, leave [{TR}] empty. To create a new file: [{TC} path="new_file.py"]file content[/{TC}].\nTo request files content: [{TRQ}]path/f.py[/{TRQ}].\nTo drop irrelevant files from context to save cognitive capacity: [{TDR}]path/f.py[/{TDR}].\nTo run a shell command: [{SC}]echo hi[/{SC}]. The tool will ask the user to approve (y/n). After running, the shell output will be returned truncated (first 10 lines, then a TRUNCATED marker, then the last 40 lines; full output if <= 50 lines).\nWhen making edits provide a [{TCM}]...[/{TCM}].'.replace('[', '<').replace(']', '>')
 
 import ast, difflib, glob, json, os, re, subprocess, sys, threading, time, urllib.request, urllib.error, platform, shutil
 from html.parser import HTMLParser; from pathlib import Path
@@ -60,6 +60,22 @@ def stream_chat(msgs, model):
 
 def apply_edits(text, root):
     changes = 0
+    # Handle file creation
+    for path, content in re.findall(rf'<{TC} path="(.*?)">(.*?)</{TC}>', text, re.DOTALL):
+        p = Path(root, path)
+        if p.exists(): print(f"{c('31m')}Skip create {path} (already exists){c('0m')}"); continue
+        content = content.strip()
+        err = None
+        if path.endswith(".py"):
+            try: ast.parse(content)
+            except SyntaxError as e: err = f"{e}"
+        elif path.endswith(".html"): h = H(); h.feed(content); err = str(h.err) if h.err else None
+        if err: print(f"{c('31m')}Lint Fail {path}: {err}{c('0m')}"); continue
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(content)
+        for l in content.splitlines(): print(f"{c('32m')}+{l}{c('0m')}")
+        print(f"{c('32m')}Created {path}{c('0m')}"); changes += 1
+    # Handle file edits
     for path, find, repl in re.findall(rf'<{TE} path="(.*?)">\s*<{TF}>(.*?)</{TF}>\s*<{TR}>(.*?)</{TR}>\s*</{TE}>', text, re.DOTALL):
         p = Path(root, path)
         if not p.exists(): print(f"{c('31m')}Skip {path} (not found){c('0m')}"); continue
