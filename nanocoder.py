@@ -15,9 +15,9 @@ def system_summary():
     global _SYS
     if _SYS: return _SYS
     try:
-        tools = ["bash","zsh","pwsh","powershell","cmd","sh","fish","git","curl","wget","tar","zip","unzip","make","cmake","gcc","clang","docker","kubectl","python","python3","pip","node","npm","yarn","pnpm","go","rustc","cargo","java","javac","mvn","gradle","ruby","gem","php","composer","perl","R","julia","conda","mamba","poetry","uv","brew","apt","dnf","yum","pacman","zypper","apk","choco","scoop","winget"]
-        vers = {t: (run(f"{t} --version") or run(f"{t} -version") or "").split('\n')[0][:200] for t in ["git","python","python3","pip","node","npm","docker","go","rustc","cargo","java","javac","gcc","clang","cmake","uv","poetry"] if shutil.which(t)}
-        _SYS = {"os": platform.system(), "release": platform.release(), "machine": platform.machine(), "python": sys.version.split()[0], "cwd": os.getcwd(), "shell": os.environ.get("SHELL") or os.environ.get("ComSpec") or "", "path": os.environ.get("PATH", ""), "venv": bool(os.environ.get("VIRTUAL_ENV") or (hasattr(sys, "base_prefix") and sys.prefix != sys.base_prefix)), "tools": sorted([t for t in tools if shutil.which(t)]), "versions": {k: v for k, v in vers.items() if v}}
+        tools = ["apt","bash","curl","docker","gcc","git","make","node","npm","perl","pip","python3","sh","tar","unzip","wget","zip"]
+        vers = {t: (run(f"{t} --version") or "").split('\n')[0][:80] for t in ["git","python3","pip","node","npm","docker","gcc"] if shutil.which(t)}
+        _SYS = {"os": platform.system(), "release": platform.release(), "machine": platform.machine(), "python": sys.version.split()[0], "cwd": os.getcwd(), "shell": os.environ.get("SHELL") or os.environ.get("ComSpec") or "", "path": os.environ.get("PATH", ""), "venv": bool(os.environ.get("VIRTUAL_ENV") or sys.prefix != sys.base_prefix), "tools": [t for t in tools if shutil.which(t)], "versions": {k: v for k, v in vers.items() if v}}
     except: _SYS = {}
     return _SYS
 
@@ -32,50 +32,20 @@ def get_map(root):
     return "\n".join(out)
 
 def get_tag_color(tag):
-    if SC in tag: return '46;30m'  # cyan bg - shell commands
-    if TF in tag: return '41;37m'  # red bg - find (being replaced)
-    if TR in tag: return '42;30m'  # green bg - replace (new code)
-    if TCM in tag: return '44;37m'  # blue bg - commit message
-    if TRQ in tag or TDR in tag: return '45;37m'  # magenta bg - file operations
-    if TE in tag or TC in tag: return '43;30m'  # yellow bg - edit/create
-    return None
+    for k, v in [(SC, '46;30m'), (TF, '41;37m'), (TR, '42;30m'), (TCM, '44;37m'), (TRQ, '45;37m'), (TDR, '45;37m'), (TE, '43;30m'), (TC, '43;30m')]:
+        if k in tag: return v
 
-def colorize_tags(text):
-    result = []
-    i = 0
-    while i < len(text):
-        if text[i] == '<':
-            end = text.find('>', i)
-            if end != -1:
-                tag = text[i:end+1]
-                color = get_tag_color(tag)
-                if color:
-                    result.append(f"{c(color)}{tag}{c('0m')}")
-                else:
-                    result.append(tag)
-                i = end + 1
-            else:
-                result.append(text[i])
-                i += 1
-        else:
-            result.append(text[i])
-            i += 1
-    return ''.join(result)
+def truncate(lines, n=50): return lines[:10] + ["[TRUNCATED]"] + lines[-40:] if len(lines) > n else lines
 
 def stream_chat(msgs, model):
-    api_key = env("OPENAI_API_KEY")
+    api_key = os.getenv("OPENAI_API_KEY")
     if not api_key: return print(f"{c('31m')}Err: Missing OPENAI_API_KEY{c('0m')}")
     stop, full, buf = threading.Event(), "", ""
     def spin():
         i = 0
         while not stop.is_set(): print(f"\r{c('47;30m')} AI {c('0m')} {'⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏'[i % 10]} ", end="", flush=True); time.sleep(0.1); i += 1
     t = threading.Thread(target=spin, daemon=True); t.start()
-    req = urllib.request.Request(f"{os.getenv('OPENAI_BASE_URL', 'https://api.openai.com/v1')}/chat/completions", headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json", "User-Agent": f"nanocoder v{VERSION}"}, data=json.dumps({"model": model, "messages": msgs, "stream": True}).encode())
-    def flush_buf():
-        nonlocal buf
-        if buf:
-            print(colorize_tags(buf), end="", flush=True)
-            buf = ""
+    req = urllib.request.Request(f"{os.getenv('OPENAI_BASE_URL', 'https://api.openai.com/v1')}/chat/completions", headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}, data=json.dumps({"model": model, "messages": msgs, "stream": True}).encode())
     try:
         with urllib.request.urlopen(req) as r:
             started = False
@@ -84,30 +54,20 @@ def stream_chat(msgs, model):
                 if not started: stop.set(); t.join(); print(f"\r{c('47;30m')} AI {c('0m')} ", end="", flush=True); started = True
                 try:
                     chunk = json.loads(line[6:])["choices"][0]["delta"].get("content", "")
-                    full += chunk
-                    buf += chunk
-                    # Process complete parts, keep incomplete tag in buffer
+                    full += chunk; buf += chunk
                     while True:
                         lt = buf.find('<')
-                        if lt == -1:
-                            print(buf, end="", flush=True); buf = ""; break
+                        if lt == -1: print(buf, end="", flush=True); buf = ""; break
                         gt = buf.find('>', lt)
                         if gt == -1:
-                            # Incomplete tag - print text before '<', keep rest in buffer
                             if lt > 0: print(buf[:lt], end="", flush=True); buf = buf[lt:]
                             break
-                        print(buf[:lt], end="", flush=True)
-                        tag = buf[lt:gt+1]
-                        color = get_tag_color(tag)
-                        if color:
-                            print(f"{c(color)}{tag}{c('0m')}", end="", flush=True)
-                        else:
-                            print(tag, end="", flush=True)
-                        buf = buf[gt+1:]
+                        print(buf[:lt], end="", flush=True); tag = buf[lt:gt+1]; color = get_tag_color(tag)
+                        print(f"{c(color)}{tag}{c('0m')}" if color else tag, end="", flush=True); buf = buf[gt+1:]
                 except: pass
-            flush_buf()
-    except urllib.error.HTTPError as e: stop.set(); t.join(); print(f"\n{c('31m')}HTTP {e.code}: {e.reason}\nURL: {req.full_url}\nResponse: {e.read().decode() if e.fp else ''}{c('0m')}")
-    except Exception as e: stop.set(); t.join(); import traceback; print(f"\n{c('31m')}Err: {e}\n{traceback.format_exc()}{c('0m')}")
+            if buf: print(buf, end="", flush=True)
+    except urllib.error.HTTPError as e: stop.set(); t.join(); print(f"\n{c('31m')}HTTP {e.code}: {e.reason}{c('0m')}")
+    except Exception as e: stop.set(); t.join(); print(f"\n{c('31m')}Err: {e}{c('0m')}")
     print("\n"); return full
 
 def apply_edits(text, root):
@@ -175,13 +135,10 @@ def main():
                     pr.wait()
                 except KeyboardInterrupt: pr.terminate(); pr.wait(timeout=2); out_lines.append("[INTERRUPTED]"); print("\n[INTERRUPTED]")
                 print(f"\n{c('90m')}exit={pr.returncode}{c('0m')}")
-                ans = ""
-                while ans not in ("t", "f", "n"):
-                    try: ans = input("Add to context? [t]runcated/[f]ull/[n]o: ").strip().lower()
-                    except EOFError: ans = "n"
+                try: ans = input("Add to context? [t]runcated/[f]ull/[n]o: ").strip().lower()
+                except EOFError: ans = "n"
                 if ans in ("t", "f"):
-                    output = "\n".join(out_lines[:10] + ["[TRUNCATED]"] + out_lines[-40:]) if ans == "t" and len(out_lines) > 50 else "\n".join(out_lines)
-                    hist.append({"role": "user", "content": f"Shell command output:\n$ {shell_cmd}\nexit={pr.returncode}\n{output}"})
+                    hist.append({"role": "user", "content": f"$ {shell_cmd}\nexit={pr.returncode}\n" + "\n".join(truncate(out_lines) if ans == "t" else out_lines)})
                     print(f"{c('93m')}Added to context{c('0m')}")
             continue
 
@@ -201,9 +158,8 @@ def main():
                 results = []
                 for cmd in [c.strip() for c in cmds]:
                     print(f"{c('1m')}{cmd}{c('0m')}\n"); ans = ""
-                    while ans not in ("y", "n"):
-                        try: ans = input("Run? (y/n): ").strip().lower()
-                        except EOFError: ans = "n"
+                    try: ans = input("Run? (y/n): ").strip().lower()
+                    except EOFError: ans = "n"
                     if ans == "y":
                         try:
                             out_lines, pr = [], subprocess.Popen(cmd, shell=True, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
@@ -211,7 +167,7 @@ def main():
                                 for line in pr.stdout: print(line, end="", flush=True); out_lines.append(line.rstrip('\n'))
                                 pr.wait()
                             except KeyboardInterrupt: pr.terminate(); (pr.wait(timeout=2) if True else pr.kill()); out_lines.append("[INTERRUPTED by Ctrl+C]"); print("\n[INTERRUPTED by Ctrl+C]")
-                            results.append(f"$ {cmd}\nexit={pr.returncode}\n" + ("\n".join(out_lines[:10] + ["[TRUNCATED]"] + out_lines[-40:]) if len(out_lines) > 50 else "\n".join(out_lines)))
+                            results.append(f"$ {cmd}\nexit={pr.returncode}\n" + "\n".join(truncate(out_lines)))
                         except Exception as e: results.append(f"$ {cmd}\nerror: {e}")
                     else: results.append(f"$ {cmd}\nDENIED by user.")
                 req = "Shell results:\n" + "\n\n".join(results) + "\nPlease continue."; continue
