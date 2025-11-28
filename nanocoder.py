@@ -37,6 +37,15 @@ def get_map(root):
         except: pass
     return "\n".join(out)
 
+def get_tag_color(tag):
+    if SC in tag: return '46;30m'  # cyan bg - shell commands
+    if TF in tag: return '41;37m'  # red bg - find (being replaced)
+    if TR in tag: return '42;30m'  # green bg - replace (new code)
+    if TCM in tag: return '44;37m'  # blue bg - commit message
+    if TRQ in tag or TDR in tag: return '45;37m'  # magenta bg - file operations
+    if TE in tag or TC in tag: return '43;30m'  # yellow bg - edit/create
+    return None
+
 def colorize_tags(text):
     result = []
     i = 0
@@ -45,10 +54,9 @@ def colorize_tags(text):
             end = text.find('>', i)
             if end != -1:
                 tag = text[i:end+1]
-                if SC in tag:
-                    result.append(f"{c('46;30m')}{tag}{c('0m')}")  # cyan bg, black text
-                elif any(t in tag for t in [TE, TF, TR, TRQ, TDR, TCM, TC]):
-                    result.append(f"{c('43;30m')}{tag}{c('0m')}")  # yellow bg, black text
+                color = get_tag_color(tag)
+                if color:
+                    result.append(f"{c(color)}{tag}{c('0m')}")
                 else:
                     result.append(tag)
                 i = end + 1
@@ -97,10 +105,9 @@ def stream_chat(msgs, model):
                         # Complete tag found - print up to and including tag
                         print(buf[:lt], end="", flush=True)
                         tag = buf[lt:gt+1]
-                        if SC in tag:
-                            print(f"{c('46;30m')}{tag}{c('0m')}", end="", flush=True)
-                        elif any(t in tag for t in [TE, TF, TR, TRQ, TDR, TCM, TC]):
-                            print(f"{c('43;30m')}{tag}{c('0m')}", end="", flush=True)
+                        color = get_tag_color(tag)
+                        if color:
+                            print(f"{c(color)}{tag}{c('0m')}", end="", flush=True)
                         else:
                             print(tag, end="", flush=True)
                         buf = buf[gt+1:]
