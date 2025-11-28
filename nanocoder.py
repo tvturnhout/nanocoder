@@ -4,22 +4,16 @@ TE, TF, TR, TRQ, TDR, TCM, SC, TC = "edit", "find", "replace", "request_files", 
 SYSTEM_PROMPT = f'You are a coding expert. Answer any questions the user might have. If the user asks you to modify code, use this XML format:\n[{TE} path="file.py"]\n[{TF}]exact code to replace[/{TF}]\n[{TR}]new code[/{TR}]\n[/{TE}]\nTo delete, leave [{TR}] empty. To create a new file: [{TC} path="new_file.py"]file content[/{TC}].\nTo request files content: [{TRQ}]path/f.py[/{TRQ}].\nTo drop irrelevant files from context to save cognitive capacity: [{TDR}]path/f.py[/{TDR}].\nTo run a shell command: [{SC}]echo hi[/{SC}]. The tool will ask the user to approve (y/n). After running, the shell output will be returned truncated (first 10 lines, then a TRUNCATED marker, then the last 40 lines; full output if <= 50 lines).\nWhen making edits provide a [{TCM}]...[/{TCM}].'.replace('[', '<').replace(']', '>')
 
 import ast, difflib, glob, json, os, re, subprocess, sys, threading, time, urllib.request, urllib.error, platform, shutil
-from html.parser import HTMLParser; from pathlib import Path
+from pathlib import Path
 
-class H(HTMLParser):
-    def __init__(self): super().__init__(); self.err = []
-    def handle_endtag(self, t):
-        if t not in {'br','img','hr','input','meta','link'}: self.err.append(t)
 def c(x): return f"\033[{x}"
 def run(cmd):
     try: return subprocess.check_output(cmd, shell=True, text=True, stderr=subprocess.STDOUT).strip()
     except: return None
-def env(k, d=None): return os.getenv(k, d)
-
 _SYS = None
-def system_summary(refresh=False):
+def system_summary():
     global _SYS
-    if _SYS and not refresh: return _SYS
+    if _SYS: return _SYS
     try:
         tools = ["bash","zsh","pwsh","powershell","cmd","sh","fish","git","curl","wget","tar","zip","unzip","make","cmake","gcc","clang","docker","kubectl","python","python3","pip","node","npm","yarn","pnpm","go","rustc","cargo","java","javac","mvn","gradle","ruby","gem","php","composer","perl","R","julia","conda","mamba","poetry","uv","brew","apt","dnf","yum","pacman","zypper","apk","choco","scoop","winget"]
         vers = {t: (run(f"{t} --version") or run(f"{t} -version") or "").split('\n')[0][:200] for t in ["git","python","python3","pip","node","npm","docker","go","rustc","cargo","java","javac","gcc","clang","cmake","uv","poetry"] if shutil.which(t)}
@@ -76,7 +70,7 @@ def stream_chat(msgs, model):
         i = 0
         while not stop.is_set(): print(f"\r{c('47;30m')} AI {c('0m')} {'⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏'[i % 10]} ", end="", flush=True); time.sleep(0.1); i += 1
     t = threading.Thread(target=spin, daemon=True); t.start()
-    req = urllib.request.Request(f"{env('OPENAI_BASE_URL', 'https://api.openai.com/v1')}/chat/completions", headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json", "User-Agent": f"nanocoder v{VERSION}"}, data=json.dumps({"model": model, "messages": msgs, "stream": True}).encode())
+    req = urllib.request.Request(f"{os.getenv('OPENAI_BASE_URL', 'https://api.openai.com/v1')}/chat/completions", headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json", "User-Agent": f"nanocoder v{VERSION}"}, data=json.dumps({"model": model, "messages": msgs, "stream": True}).encode())
     def flush_buf():
         nonlocal buf
         if buf:
@@ -123,12 +117,9 @@ def apply_edits(text, root):
         p = Path(root, path)
         if p.exists(): print(f"{c('31m')}Skip create {path} (already exists){c('0m')}"); continue
         content = content.strip()
-        err = None
         if path.endswith(".py"):
             try: ast.parse(content)
-            except SyntaxError as e: err = f"{e}"
-        elif path.endswith(".html"): h = H(); h.feed(content); err = str(h.err) if h.err else None
-        if err: print(f"{c('31m')}Lint Fail {path}: {err}{c('0m')}"); continue
+            except SyntaxError as e: print(f"{c('31m')}Lint Fail {path}: {e}{c('0m')}"); continue
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text(content)
         for l in content.splitlines(): print(f"{c('32m')}+{l}{c('0m')}")
@@ -140,12 +131,9 @@ def apply_edits(text, root):
         content = p.read_text()
         if find.strip() not in content: print(f"{c('31m')}Match failed in {path}{c('0m')}"); continue
         new = content.replace(find.strip(), repl.strip(), 1)
-        err = None
         if path.endswith(".py"):
             try: ast.parse(new)
-            except SyntaxError as e: err = f"{e}"
-        elif path.endswith(".html"): h = H(); h.feed(new); err = str(h.err) if h.err else None
-        if err: print(f"{c('31m')}Lint Fail {path}: {err}{c('0m')}"); continue
+            except SyntaxError as e: print(f"{c('31m')}Lint Fail {path}: {e}{c('0m')}"); continue
         if content != new:
             for l in difflib.unified_diff(content.splitlines(), new.splitlines(), lineterm=""):
                 if not l.startswith(('---','+++')): print(f"{c('32m' if l.startswith('+') else '31m' if l.startswith('-') else '0m')}{l}{c('0m')}")
@@ -155,7 +143,7 @@ def apply_edits(text, root):
 
 def main():
     root, ctx, hist = run("git rev-parse --show-toplevel") or os.getcwd(), set(), []
-    model = env("OPENAI_MODEL", "gpt-4o")
+    model = os.getenv("OPENAI_MODEL", "gpt-4o")
     print(f"{c('47;30m')} nanocoder v{VERSION} {c('0m')} {c('47;30m')} {model} {c('0m')} {c('47;30m')} ctrl+d to send {c('0m')}")
     while True:
         print(f"{c('1;34m')}> {c('0m')}", end="", flush=True); lines = []
