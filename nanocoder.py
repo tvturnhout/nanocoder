@@ -166,7 +166,7 @@ def main():
                             try:
                                 for line in process.stdout: print(line, end="", flush=True); output_lines.append(line.rstrip('\n'))
                                 process.wait()
-                            except KeyboardInterrupt: process.terminate(); (process.wait(timeout=2) if True else process.kill()); output_lines.append("[INTERRUPTED by Ctrl+C]"); print("\n[INTERRUPTED by Ctrl+C]")
+                            except KeyboardInterrupt: process.terminate(); process.wait(timeout=2); output_lines.append("[INTERRUPTED by Ctrl+C]"); print("\n[INTERRUPTED by Ctrl+C]")
                             results.append(f"$ {cmd}\nexit={process.returncode}\n" + "\n".join(truncate(output_lines)))
                         except Exception as err: results.append(f"$ {cmd}\nerror: {err}")
                     else: results.append(f"$ {cmd}\nDENIED by user.")
