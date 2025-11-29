@@ -82,7 +82,7 @@ def stream_chat(messages, model):
             started = False
             for line in response:
                 if not line.startswith(b"data: "): continue
-                if not started: stop_event.set(); spinner_thread.join(); print(f"\r{ansi('47;30m')} AI {ansi('0m')}\n", end="", flush=True); started = True
+                if not started: stop_event.set(); spinner_thread.join(); print(f"\r{ansi('47;30m')} AI {ansi('0m')}   \n", end="", flush=True); started = True
                 try:
                     chunk = json.loads(line[6:])["choices"][0]["delta"].get("content", "")
                     full_response += chunk; buffer += chunk
