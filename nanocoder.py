@@ -55,15 +55,13 @@ def stream_chat(messages, model):
                 try:
                     chunk = json.loads(line[6:])["choices"][0]["delta"].get("content", "")
                     full_response += chunk; buffer += chunk
+                    known_tags = [TAG_EDIT, TAG_FIND, TAG_REPLACE, TAG_REQUEST, TAG_DROP, TAG_COMMIT, TAG_SHELL, TAG_CREATE]
+                    tag_pattern = re.compile(r'<(/?(?:' + '|'.join(known_tags) + r'))(?:\s[^>]*)?>') 
                     while True:
-                        tag_start = buffer.find('<')
-                        if tag_start == -1: print(buffer, end="", flush=True); buffer = ""; break
-                        tag_end = buffer.find('>', tag_start)
-                        if tag_end == -1:
-                            if tag_start > 0: print(buffer[:tag_start], end="", flush=True); buffer = buffer[tag_start:]
-                            break
-                        print(buffer[:tag_start], end="", flush=True); tag = buffer[tag_start:tag_end+1]; color = get_tag_color(tag)
-                        print(f"{ansi(color)}{tag}{ansi('0m')}" if color else tag, end="", flush=True); buffer = buffer[tag_end+1:]
+                        match = tag_pattern.search(buffer)
+                        if not match: print(buffer, end="", flush=True); buffer = ""; break
+                        print(buffer[:match.start()], end="", flush=True); tag = match.group(0); color = get_tag_color(tag)
+                        print(f"{ansi(color)}{tag}{ansi('0m')}" if color else tag, end="", flush=True); buffer = buffer[match.end():]
                 except: pass
             if buffer: print(buffer, end="", flush=True)
     except urllib.error.HTTPError as err: stop_event.set(); spinner_thread.join(); print(f"\n{ansi('31m')}HTTP {err.code}: {err.reason}{ansi('0m')}")
