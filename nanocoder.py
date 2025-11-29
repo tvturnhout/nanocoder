@@ -7,6 +7,7 @@ import ast, difflib, glob, json, os, re, subprocess, sys, threading, time, urlli
 from pathlib import Path
 
 def ansi(code): return f"\033[{code}"
+def styled(text, style): return f"{ansi(style)}{text}{ansi('0m')}"
 def run(shell_cmd):
     try: return subprocess.check_output(shell_cmd, shell=True, text=True, stderr=subprocess.STDOUT).strip()
     except: return None
@@ -138,16 +139,23 @@ def run_shell_interactive(cmd):
 
 def stream_chat(messages, model):
     api_key = os.getenv("OPENAI_API_KEY")
-    if not api_key: print(f"{ansi('31m')}Err: Missing OPENAI_API_KEY{ansi('0m')}"); return None, False
+    if not api_key: print(styled("Err: Missing OPENAI_API_KEY", "31m")); return None, False
     stop_event, full_response, buffer, md_buffer = threading.Event(), "", "", ""
     in_xml_tag, in_code_fence, interrupted = False, False, False
     def spin():
         spinner_idx = 0
         print()  # Move to new line before spinner
-        while not stop_event.is_set(): print(f"\r{ansi('47;30m')} AI {ansi('0m')} {'⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏'[spinner_idx % 10]} ", end="", flush=True); time.sleep(0.1); spinner_idx += 1
+        while not stop_event.is_set(): print(f"\r{styled(' AI ', '47;30m')} {'⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏'[spinner_idx % 10]} ", end="", flush=True); time.sleep(0.1); spinner_idx += 1
     def flush_md():
         nonlocal md_buffer
         if md_buffer: print(render_md(md_buffer), end="", flush=True); md_buffer = ""
+    def flush_buffer():
+        nonlocal buffer, md_buffer
+        if not buffer: return
+        if in_xml_tag: print(buffer, end="", flush=True)
+        elif in_code_fence: print(f"{ansi('48;5;236;37m')}" + '\n'.join(f"{ln}{ansi('K')}" for ln in buffer.split('\n')), end="", flush=True)
+        else: md_buffer += buffer
+        buffer = ""
     spinner_thread = threading.Thread(target=spin, daemon=True); spinner_thread.start()
     request = urllib.request.Request(f"{os.getenv('OPENAI_BASE_URL', 'https://api.openai.com/v1')}/chat/completions", headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}, data=json.dumps({"model": model, "messages": messages, "stream": True}).encode())
     try:
@@ -155,7 +163,7 @@ def stream_chat(messages, model):
             started = False
             for line in response:
                 if not line.startswith(b"data: "): continue
-                if not started: stop_event.set(); spinner_thread.join(); print(f"\r{ansi('47;30m')} AI {ansi('0m')}   \n", end="", flush=True); started = True
+                if not started: stop_event.set(); spinner_thread.join(); print(f"\r{styled(' AI ', '47;30m')}   \n", end="", flush=True); started = True
                 try:
                     chunk = json.loads(line[6:])["choices"][0]["delta"].get("content", "")
                     full_response += chunk; buffer += chunk
@@ -210,10 +218,7 @@ def stream_chat(messages, model):
                                 else:
                                     print(buffer, end="", flush=True); buffer = ""
                             elif in_code_fence:
-                                # Add erase-to-end-of-line after each line to extend background
-                                code_lines = buffer.split('\n')
-                                code_out = '\n'.join(f"{line}{ansi('K')}" for line in code_lines)
-                                print(f"{ansi('48;5;236;37m')}{code_out}", end="", flush=True); buffer = ""
+                                print(f"{ansi('48;5;236;37m')}" + '\n'.join(f"{ln}{ansi('K')}" for ln in buffer.split('\n')), end="", flush=True); buffer = ""
                             else:
                                 md_buffer += buffer
                                 if '\n\n' in md_buffer:
@@ -224,72 +229,57 @@ def stream_chat(messages, model):
                                 buffer = ""
                             break
                 except: pass
-            if buffer: 
-                if in_xml_tag: print(buffer, end="", flush=True)
-                elif in_code_fence:
-                    code_lines = buffer.split('\n')
-                    code_out = '\n'.join(f"{line}{ansi('K')}" for line in code_lines)
-                    print(f"{ansi('48;5;236;37m')}{code_out}", end="", flush=True)
-                else: md_buffer += buffer
-            flush_md()
-            if in_code_fence: print(f"{ansi('0m')}", end="", flush=True)
+            flush_buffer(); flush_md()
+            if in_code_fence: print(ansi('0m'), end="", flush=True)
     except KeyboardInterrupt:
         stop_event.set(); spinner_thread.join(); interrupted = True
-        if buffer:
-            if in_xml_tag: print(buffer, end="", flush=True)
-            elif in_code_fence:
-                code_lines = buffer.split('\n')
-                code_out = '\n'.join(f"{line}{ansi('K')}" for line in code_lines)
-                print(f"{ansi('48;5;236;37m')}{code_out}", end="", flush=True)
-            else: md_buffer += buffer
-        flush_md()
-        if in_code_fence: print(f"{ansi('0m')}", end="", flush=True)
-        print(f"\n{ansi('93m')}[user interrupted]{ansi('0m')}")
-    except urllib.error.HTTPError as err: stop_event.set(); spinner_thread.join(); print(f"\n{ansi('31m')}HTTP {err.code}: {err.reason}{ansi('0m')}")
-    except Exception as err: stop_event.set(); spinner_thread.join(); print(f"\n{ansi('31m')}Err: {err}{ansi('0m')}")
+        flush_buffer(); flush_md()
+        if in_code_fence: print(ansi('0m'), end="", flush=True)
+        print(f"\n{styled('[user interrupted]', '93m')}")
+    except urllib.error.HTTPError as err: stop_event.set(); spinner_thread.join(); print(f"\n{styled(f'HTTP {err.code}: {err.reason}', '31m')}")
+    except Exception as err: stop_event.set(); spinner_thread.join(); print(f"\n{styled(f'Err: {err}', '31m')}")
     print("\n"); return full_response, interrupted
 
 def apply_edits(text, root):
     changes = 0
     for path, content in re.findall(rf'<{TAGS["create"]} path="(.*?)">(.*?)</{TAGS["create"]}>', text, re.DOTALL):
         filepath = Path(root, path)
-        if filepath.exists(): print(f"{ansi('31m')}Skip create {path} (already exists){ansi('0m')}"); continue
+        if filepath.exists(): print(styled(f"Skip create {path} (already exists)", "31m")); continue
         content = content.strip()
         if path.endswith(".py"):
             try: ast.parse(content)
-            except SyntaxError as err: print(f"{ansi('31m')}Lint Fail {path}: {err}{ansi('0m')}"); continue
+            except SyntaxError as err: print(styled(f"Lint Fail {path}: {err}", "31m")); continue
         filepath.parent.mkdir(parents=True, exist_ok=True)
         filepath.write_text(content)
-        for line in content.splitlines(): print(f"{ansi('32m')}+{line}{ansi('0m')}")
-        print(f"{ansi('32m')}Created {path}{ansi('0m')}"); changes += 1
+        for line in content.splitlines(): print(styled(f"+{line}", "32m"))
+        print(styled(f"Created {path}", "32m")); changes += 1
     for path, find_text, replace_text in re.findall(rf'<{TAGS["edit"]} path="(.*?)">\s*<{TAGS["find"]}>(.*?)</{TAGS["find"]}>\s*<{TAGS["replace"]}>(.*?)</{TAGS["replace"]}>\s*</{TAGS["edit"]}>', text, re.DOTALL):
         filepath = Path(root, path)
-        if not filepath.exists(): print(f"{ansi('31m')}Skip {path} (not found){ansi('0m')}"); continue
+        if not filepath.exists(): print(styled(f"Skip {path} (not found)", "31m")); continue
         content = filepath.read_text()
-        if find_text.strip() not in content: print(f"{ansi('31m')}Match failed in {path}{ansi('0m')}"); continue
+        if find_text.strip() not in content: print(styled(f"Match failed in {path}", "31m")); continue
         new_content = content.replace(find_text.strip(), replace_text.strip(), 1)
         if path.endswith(".py"):
             try: ast.parse(new_content)
-            except SyntaxError as err: print(f"{ansi('31m')}Lint Fail {path}: {err}{ansi('0m')}"); continue
+            except SyntaxError as err: print(styled(f"Lint Fail {path}: {err}", "31m")); continue
         if content != new_content:
             for diff_line in difflib.unified_diff(content.splitlines(), new_content.splitlines(), lineterm=""):
-                if not diff_line.startswith(('---','+++')): print(f"{ansi('32m' if diff_line.startswith('+') else '31m' if diff_line.startswith('-') else '0m')}{diff_line}{ansi('0m')}")
-            filepath.write_text(new_content); print(f"{ansi('32m')}Applied {path}{ansi('0m')}"); changes += 1
+                if not diff_line.startswith(('---','+++')): print(styled(diff_line, '32m' if diff_line.startswith('+') else '31m' if diff_line.startswith('-') else '0m'))
+            filepath.write_text(new_content); print(styled(f"Applied {path}", "32m")); changes += 1
     commit_match = re.search(rf'<{TAGS["commit"]}>(.*?)</{TAGS["commit"]}>', text, re.DOTALL)
     if changes: run(f"git add -A && git commit -m '{commit_match.group(1).strip() if commit_match else 'Update'}'")
 
 def main():
     repo_root, context_files, history = run("git rev-parse --show-toplevel") or os.getcwd(), set(), []
     model = os.getenv("OPENAI_MODEL", "gpt-4o")
-    print(f"{ansi('47;30m')} nanocoder v{VERSION} {ansi('0m')} {ansi('47;30m')} {model} {ansi('0m')} {ansi('47;30m')} ctrl+d to send {ansi('0m')}")
+    print(f"{styled(' nanocoder v' + str(VERSION) + ' ', '47;30m')} {styled(' ' + model + ' ', '47;30m')} {styled(' ctrl+d to send ', '47;30m')}")
     while True:
-        title("❓ nanocoder"); print(f"\a{ansi('1;34m')}> {ansi('0m')}", end="", flush=True); input_lines = []
+        title("❓ nanocoder"); print(f"\a{styled('> ', '1;34m')}", end="", flush=True); input_lines = []
         try:
             while True: input_lines.append(input())
         except EOFError: pass
         except KeyboardInterrupt: print(); continue
-        user_input = "\n".join(input_lines).strip()
-        if not user_input: continue
+        if not (user_input := "\n".join(input_lines).strip()): continue
         if user_input.startswith("/"):
             command, _, arg = user_input.partition(" ")
             if command == "/add": found = [filepath for filepath in glob.glob(arg, root_dir=repo_root, recursive=True) if Path(repo_root, filepath).is_file()]; context_files.update(found); print(f"Added {len(found)} files")
@@ -307,12 +297,12 @@ def main():
             shell_cmd = user_input[1:].strip()
             if shell_cmd:
                 output_lines, exit_code = run_shell_interactive(shell_cmd)
-                print(f"\n{ansi('90m')}exit={exit_code}{ansi('0m')}"); title("❓ nanocoder")
+                print(f"\n{styled(f'exit={exit_code}', '90m')}"); title("❓ nanocoder")
                 try: answer = input("\aAdd to context? [t]runcated/[f]ull/[n]o: ").strip().lower()
                 except EOFError: answer = "n"
                 if answer in ("t", "f"):
                     history.append({"role": "user", "content": f"$ {shell_cmd}\nexit={exit_code}\n" + "\n".join(truncate(output_lines) if answer == "t" else output_lines)})
-                    print(f"{ansi('93m')}Added to context{ansi('0m')}")
+                    print(styled("Added to context", "93m"))
             continue
 
         request = user_input
@@ -341,12 +331,12 @@ def main():
                     elif tag == TAGS["drop"]:
                         context_files.discard(filepath)
             context_files.update(added_files)
-            if added_files: print(f"{ansi('93m')}+{len(added_files)} file(s){ansi('0m')}"); request = f"Added files: {', '.join(added_files)}. Please continue."; continue
+            if added_files: print(styled(f"+{len(added_files)} file(s)", "93m")); request = f"Added files: {', '.join(added_files)}. Please continue."; continue
             shell_commands = re.findall(rf'<{TAGS["shell"]}>(.*?)</{TAGS["shell"]}>', full_response, re.DOTALL)
             if shell_commands:
                 results = []
                 for cmd in [s.strip() for s in shell_commands]:
-                    print(f"{ansi('1m')}{cmd}{ansi('0m')}\n"); title("❓ nanocoder")
+                    print(f"{styled(cmd, '1m')}\n"); title("❓ nanocoder")
                     try: answer = input("\aRun? (y/n): ").strip().lower()
                     except EOFError: answer = "n"
                     if answer == "y":
