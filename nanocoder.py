@@ -36,6 +36,33 @@ def get_map(root):
 TAG_COLORS = {TAGS["shell"]: '46;30m', TAGS["find"]: '41;37m', TAGS["replace"]: '42;30m', TAGS["commit"]: '44;37m', TAGS["request"]: '45;37m', TAGS["drop"]: '45;37m', TAGS["edit"]: '43;30m', TAGS["create"]: '43;30m'}
 def get_tag_color(tag): return next((c for t, c in TAG_COLORS.items() if t in tag), None)
 
+def format_table(lines):
+    """Parse and format a markdown table with proper column alignment."""
+    rows = []
+    for line in lines:
+        cells = [c.strip() for c in line.strip().strip('|').split('|')]
+        rows.append(cells)
+    if len(rows) < 2: return '\n'.join(lines)
+    col_count = max(len(row) for row in rows)
+    col_widths = [0] * col_count
+    for i, row in enumerate(rows):
+        if i == 1: continue  # Skip separator row for width calculation
+        for j, cell in enumerate(row):
+            if j < col_count: col_widths[j] = max(col_widths[j], len(cell))
+    col_widths = [max(w, 3) for w in col_widths]  # Minimum width of 3
+    result = []
+    for i, row in enumerate(rows):
+        while len(row) < col_count: row.append('')
+        if i == 1:  # Separator row
+            result.append(f"{ansi('90m')}|" + '|'.join('-' * (w + 2) for w in col_widths) + f"|{ansi('0m')}")
+        elif i == 0:  # Header row
+            cells = [f" {cell.ljust(col_widths[j])} " for j, cell in enumerate(row)]
+            result.append(f"{ansi('1m')}|" + '|'.join(cells) + f"|{ansi('22m')}")
+        else:  # Data rows
+            cells = [f" {cell.ljust(col_widths[j])} " for j, cell in enumerate(row)]
+            result.append(f"{ansi('90m')}|{ansi('0m')}" + f"{ansi('90m')}|{ansi('0m')}".join(cells) + f"{ansi('90m')}|{ansi('0m')}")
+    return '\n'.join(result)
+
 def render_md(text):
     parts = re.split(r'(```[\s\S]*?```|`[^`\n]+`)', text)
     result = []
@@ -48,6 +75,28 @@ def render_md(text):
         elif part.startswith('`') and part.endswith('`'):
             result.append(f"{ansi('48;5;236m')}{part[1:-1]}{ansi('0m')}")
         else:
+            # Process tables before other markdown
+            def process_tables(text):
+                lines = text.split('\n')
+                output, i = [], 0
+                while i < len(lines):
+                    # Check if this could be start of a table (need at least 2 more lines)
+                    if i + 1 < len(lines) and '|' in lines[i]:
+                        # Check if next line is a separator row
+                        sep_pattern = r'^\|?[\s]*:?-+:?[\s]*(\|[\s]*:?-+:?[\s]*)+\|?$'
+                        if re.match(sep_pattern, lines[i + 1].strip()):
+                            # Found a table, collect all rows
+                            table_lines = [lines[i], lines[i + 1]]
+                            i += 2
+                            while i < len(lines) and '|' in lines[i] and lines[i].strip():
+                                table_lines.append(lines[i])
+                                i += 1
+                            output.append(format_table(table_lines))
+                            continue
+                    output.append(lines[i])
+                    i += 1
+                return '\n'.join(output)
+            part = process_tables(part)
             part = re.sub(r'\[([^\]]+)\]\(([^)]+)\)', lambda m: f"\033]8;;{m.group(2)}\033\\{ansi('4;34m')}{m.group(1)}{ansi('0m')}\033]8;;\033\\", part)
             part = re.sub(r'\*\*(.+?)\*\*', lambda m: f"{ansi('1m')}{m.group(1)}{ansi('22m')}", part)
             part = re.sub(r'(?<!\*)\*([^*]+?)\*(?!\*)', lambda m: f"{ansi('3m')}{m.group(1)}{ansi('23m')}", part)
