@@ -37,7 +37,7 @@ TAG_COLORS = {TAGS["shell"]: '46;30m', TAGS["find"]: '41;37m', TAGS["replace"]: 
 def get_tag_color(tag): return next((c for t, c in TAG_COLORS.items() if t in tag), None)
 
 def render_md(text):
-    """Render markdown: bold, inline code, headers. Preserves code blocks with grey background."""
+    """Render markdown: bold, inline code, headers, links. Preserves code blocks with grey background."""
     parts = re.split(r'(```[\s\S]*?```|`[^`\n]+`)', text)
     result = []
     for part in parts:
@@ -51,6 +51,8 @@ def render_md(text):
             # Inline code: grey background
             result.append(f"{ansi('48;5;236m')}{part[1:-1]}{ansi('0m')}")
         else:
+            # Links [text](url) -> OSC 8 clickable links (underlined blue)
+            part = re.sub(r'\[([^\]]+)\]\(([^)]+)\)', lambda m: f"\033]8;;{m.group(2)}\033\\{ansi('4;34m')}{m.group(1)}{ansi('0m')}\033]8;;\033\\", part)
             # Bold
             part = re.sub(r'\*\*(.+?)\*\*', lambda m: f"{ansi('1m')}{m.group(1)}{ansi('22m')}", part)
             # Headers (only at line start)
