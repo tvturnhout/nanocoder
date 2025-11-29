@@ -7,6 +7,7 @@ import ast, difflib, glob, json, os, re, subprocess, sys, threading, time, urlli
 from pathlib import Path
 
 def ansi(code): return f"\033[{code}"
+def title(t): print(f"\033]0;{t}\007", end="", flush=True)
 def run(shell_cmd):
     try: return subprocess.check_output(shell_cmd, shell=True, text=True, stderr=subprocess.STDOUT).strip()
     except: return None
@@ -112,7 +113,7 @@ def main():
     model = os.getenv("OPENAI_MODEL", "gpt-4o")
     print(f"{ansi('47;30m')} nanocoder v{VERSION} {ansi('0m')} {ansi('47;30m')} {model} {ansi('0m')} {ansi('47;30m')} ctrl+d to send {ansi('0m')}")
     while True:
-        print(f"\a{ansi('1;34m')}> {ansi('0m')}", end="", flush=True); input_lines = []
+        title("❓ nanocoder"); print(f"\a{ansi('1;34m')}> {ansi('0m')}", end="", flush=True); input_lines = []
         try:
             while True: input_lines.append(input())
         except EOFError: pass
@@ -141,6 +142,7 @@ def main():
                     process.wait()
                 except KeyboardInterrupt: process.terminate(); process.wait(timeout=2); output_lines.append("[INTERRUPTED]"); print("\n[INTERRUPTED]")
                 print(f"\n{ansi('90m')}exit={process.returncode}{ansi('0m')}")
+                title("❓ nanocoder")
                 try: answer = input("\aAdd to context? [t]runcated/[f]ull/[n]o: ").strip().lower()
                 except EOFError: answer = "n"
                 if answer in ("t", "f"):
@@ -152,7 +154,7 @@ def main():
         while True:
             context = f"### Repo Map\n{get_map(repo_root)}\n### Files\n" + "\n".join([f"File: {filepath}\n```\n{Path(repo_root,filepath).read_text()}\n```" for filepath in context_files if Path(repo_root,filepath).exists()])
             messages = [{"role": "system", "content": SYSTEM_PROMPT}, {"role": "system", "content": f"System summary: {json.dumps(system_summary(), separators=(',',':'))}"}] + history + [{"role": "user", "content": f"{context}\nRequest: {request}"}]
-            full_response = stream_chat(messages, model); history.extend([{"role": "user", "content": request}, {"role": "assistant", "content": full_response}]); apply_edits(full_response, repo_root)
+            title("⏳ nanocoder"); full_response = stream_chat(messages, model); history.extend([{"role": "user", "content": request}, {"role": "assistant", "content": full_response}]); apply_edits(full_response, repo_root)
             file_requests = re.findall(rf'<({TAG_REQUEST}|{TAG_DROP})>(.*?)</\1>', full_response, re.DOTALL)
             added_files = []
             for tag, content in file_requests:
@@ -170,6 +172,7 @@ def main():
                 results = []
                 for cmd in [shell_cmd.strip() for shell_cmd in shell_commands]:
                     print(f"{ansi('1m')}{cmd}{ansi('0m')}\n"); answer = ""
+                    title("❓ nanocoder")
                     try: answer = input("\aRun? (y/n): ").strip().lower()
                     except EOFError: answer = "n"
                     if answer == "y":
