@@ -137,8 +137,12 @@ def stream_chat(messages, model):
                                     md_buffer = parts[1] if len(parts) > 1 else ""
                                 buffer = buffer[lt_pos:]
                             elif in_xml_tag:
-                                # Inside XML tag: print raw
-                                print(buffer, end="", flush=True); buffer = ""
+                                # Inside XML tag: print raw, but buffer potential closing tags
+                                if lt_pos != -1:
+                                    print(buffer[:lt_pos], end="", flush=True)
+                                    buffer = buffer[lt_pos:]
+                                else:
+                                    print(buffer, end="", flush=True); buffer = ""
                             elif in_code_fence:
                                 # Inside code fence: print with grey background
                                 print(f"{ansi('48;5;236;37m')}{buffer}", end="", flush=True); buffer = ""
