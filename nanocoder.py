@@ -52,7 +52,12 @@ def render_md(text):
             part = re.sub(r'\*\*(.+?)\*\*', lambda m: f"{ansi('1m')}{m.group(1)}{ansi('22m')}", part)
             part = re.sub(r'(?<!\*)\*([^*]+?)\*(?!\*)', lambda m: f"{ansi('3m')}{m.group(1)}{ansi('23m')}", part)
             part = re.sub(r'(?<!\w)_([^_]+?)_(?!\w)', lambda m: f"{ansi('3m')}{m.group(1)}{ansi('23m')}", part)
-            part = re.sub(r'^(#{1,3}) (.+)$', lambda m: f"{ansi('1;33m')}{m.group(2)}{ansi('0m')}", part, flags=re.MULTILINE)
+            def format_header(m):
+                level, text = len(m.group(1)), m.group(2)
+                if level == 1: return f"{ansi('1;4;33m')}{text}{ansi('0m')}"  # Bold + underline + yellow
+                elif level == 2: return f"{ansi('1;33m')}{text}{ansi('0m')}"  # Bold + yellow
+                else: return f"{ansi('33m')}{text}{ansi('0m')}"  # Just yellow
+            part = re.sub(r'^(#{1,3}) (.+)$', format_header, part, flags=re.MULTILINE)
             result.append(part)
     return ''.join(result)
 def truncate(lines, n=50): return lines if len(lines) <= n else lines[:10] + ["[TRUNCATED]"] + lines[-40:]
