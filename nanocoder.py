@@ -37,28 +37,21 @@ TAG_COLORS = {TAGS["shell"]: '46;30m', TAGS["find"]: '41;37m', TAGS["replace"]: 
 def get_tag_color(tag): return next((c for t, c in TAG_COLORS.items() if t in tag), None)
 
 def render_md(text):
-    """Render markdown: bold, inline code, headers, links. Preserves code blocks with grey background."""
     parts = re.split(r'(```[\s\S]*?```|`[^`\n]+`)', text)
     result = []
     for part in parts:
         if part.startswith('```') and part.endswith('```'):
-            # Fenced code block: grey background, white text
             inner = part[3:-3]
             if inner.startswith('\n'): inner = inner[1:]
-            elif '\n' in inner: inner = inner.split('\n', 1)[1]  # remove language hint line
+            elif '\n' in inner: inner = inner.split('\n', 1)[1]
             result.append(f"\n{ansi('48;5;236;37m')}{inner}{ansi('0m')}")
         elif part.startswith('`') and part.endswith('`'):
-            # Inline code: grey background
             result.append(f"{ansi('48;5;236m')}{part[1:-1]}{ansi('0m')}")
         else:
-            # Links [text](url) -> OSC 8 clickable links (underlined blue)
             part = re.sub(r'\[([^\]]+)\]\(([^)]+)\)', lambda m: f"\033]8;;{m.group(2)}\033\\{ansi('4;34m')}{m.group(1)}{ansi('0m')}\033]8;;\033\\", part)
-            # Bold **text**
             part = re.sub(r'\*\*(.+?)\*\*', lambda m: f"{ansi('1m')}{m.group(1)}{ansi('22m')}", part)
-            # Italic *text* or _text_ (but not inside words for _)
             part = re.sub(r'(?<!\*)\*([^*]+?)\*(?!\*)', lambda m: f"{ansi('3m')}{m.group(1)}{ansi('23m')}", part)
             part = re.sub(r'(?<!\w)_([^_]+?)_(?!\w)', lambda m: f"{ansi('3m')}{m.group(1)}{ansi('23m')}", part)
-            # Headers (only at line start)
             part = re.sub(r'^(#{1,3}) (.+)$', lambda m: f"{ansi('1;33m')}{m.group(2)}{ansi('0m')}", part, flags=re.MULTILINE)
             result.append(part)
     return ''.join(result)
@@ -95,25 +88,22 @@ def stream_chat(messages, model):
                     full_response += chunk; buffer += chunk
                     tag_pattern = re.compile(r'<(/?(?:' + '|'.join(TAGS.values()) + r'))(?:\s[^>]*)?>')
                     while buffer:
-                        # Check for code fence toggle (``` at line start or after newline)
                         fence_match = re.match(r'^(```[^\n]*\n?)', buffer) if not in_xml_tag else None
                         if not fence_match and not in_xml_tag:
                             fence_pos = buffer.find('\n```')
                             if fence_pos != -1: fence_match = re.match(r'^(\n```[^\n]*\n?)', buffer[fence_pos:])
                         if fence_match and not in_xml_tag:
                             fence_pos = buffer.find(fence_match.group(0))
-                            # Text before fence goes to md_buffer
                             md_buffer += buffer[:fence_pos]
-                            if not in_code_fence: flush_md()  # Flush markdown before entering code block
+                            if not in_code_fence: flush_md()
                             in_code_fence = not in_code_fence
                             fence_text = fence_match.group(0)
                             if in_code_fence:
-                                print(f"{ansi('48;5;236;37m')}", end="", flush=True)  # Start grey background
+                                print(f"{ansi('48;5;236;37m')}", end="", flush=True)
                             else:
-                                print(f"{ansi('0m')}", end="", flush=True)  # End grey background
+                                print(f"{ansi('0m')}", end="", flush=True)
                             buffer = buffer[fence_pos + len(fence_text):]
                             continue
-                        # Check for XML tag
                         match = tag_pattern.search(buffer)
                         if match and not in_code_fence:
                             before_tag = buffer[:match.start()]
@@ -129,12 +119,9 @@ def stream_chat(messages, model):
                             else: in_xml_tag = True
                             buffer = buffer[match.end():]
                         else:
-                            # No complete tag found yet
                             lt_pos = buffer.rfind('<') if not in_code_fence else -1
                             if lt_pos != -1 and not in_xml_tag:
-                                # Potential incomplete tag, buffer it
                                 md_buffer += buffer[:lt_pos]
-                                # Flush on paragraph boundary if not in code fence
                                 if '\n\n' in md_buffer:
                                     parts = md_buffer.rsplit('\n\n', 1)
                                     md_buffer = parts[0] + '\n\n'
@@ -142,19 +129,15 @@ def stream_chat(messages, model):
                                     md_buffer = parts[1] if len(parts) > 1 else ""
                                 buffer = buffer[lt_pos:]
                             elif in_xml_tag:
-                                # Inside XML tag: print raw, but buffer potential closing tags
                                 if lt_pos != -1:
                                     print(buffer[:lt_pos], end="", flush=True)
                                     buffer = buffer[lt_pos:]
                                 else:
                                     print(buffer, end="", flush=True); buffer = ""
                             elif in_code_fence:
-                                # Inside code fence: print with grey background
                                 print(f"{ansi('48;5;236;37m')}{buffer}", end="", flush=True); buffer = ""
                             else:
-                                # Outside tag: accumulate for markdown
                                 md_buffer += buffer
-                                # Flush on paragraph boundary
                                 if '\n\n' in md_buffer:
                                     parts = md_buffer.rsplit('\n\n', 1)
                                     md_buffer = parts[0] + '\n\n'
@@ -168,7 +151,7 @@ def stream_chat(messages, model):
                 elif in_code_fence: print(f"{ansi('48;5;236;37m')}{buffer}", end="", flush=True)
                 else: md_buffer += buffer
             flush_md()
-            if in_code_fence: print(f"{ansi('0m')}", end="", flush=True)  # Reset if stream ended in code block
+            if in_code_fence: print(f"{ansi('0m')}", end="", flush=True)
     except urllib.error.HTTPError as err: stop_event.set(); spinner_thread.join(); print(f"\n{ansi('31m')}HTTP {err.code}: {err.reason}{ansi('0m')}")
     except Exception as err: stop_event.set(); spinner_thread.join(); print(f"\n{ansi('31m')}Err: {err}{ansi('0m')}")
     print("\n"); return full_response
