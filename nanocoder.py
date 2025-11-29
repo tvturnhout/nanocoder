@@ -78,6 +78,9 @@ def render_md(text):
             inner = part[3:-3]
             if inner.startswith('\n'): inner = inner[1:]
             elif '\n' in inner: inner = inner.split('\n', 1)[1]
+            # Add erase-to-end-of-line after each line to extend background color
+            inner_lines = inner.split('\n')
+            inner = '\n'.join(f"{line}{ansi('K')}" for line in inner_lines)
             result.append(f"\n{ansi('48;5;236;37m')}{inner}{ansi('0m')}")
         elif part.startswith('`') and part.endswith('`'):
             result.append(f"{ansi('48;5;236m')}{part[1:-1]}{ansi('0m')}")
@@ -199,7 +202,10 @@ def stream_chat(messages, model):
                                 else:
                                     print(buffer, end="", flush=True); buffer = ""
                             elif in_code_fence:
-                                print(f"{ansi('48;5;236;37m')}{buffer}", end="", flush=True); buffer = ""
+                                # Add erase-to-end-of-line after each line to extend background
+                                code_lines = buffer.split('\n')
+                                code_out = '\n'.join(f"{line}{ansi('K')}" if i < len(code_lines) - 1 else line for i, line in enumerate(code_lines))
+                                print(f"{ansi('48;5;236;37m')}{code_out}", end="", flush=True); buffer = ""
                             else:
                                 md_buffer += buffer
                                 if '\n\n' in md_buffer:
@@ -212,7 +218,10 @@ def stream_chat(messages, model):
                 except: pass
             if buffer: 
                 if in_xml_tag: print(buffer, end="", flush=True)
-                elif in_code_fence: print(f"{ansi('48;5;236;37m')}{buffer}", end="", flush=True)
+                elif in_code_fence:
+                    code_lines = buffer.split('\n')
+                    code_out = '\n'.join(f"{line}{ansi('K')}" if i < len(code_lines) - 1 else line for i, line in enumerate(code_lines))
+                    print(f"{ansi('48;5;236;37m')}{code_out}", end="", flush=True)
                 else: md_buffer += buffer
             flush_md()
             if in_code_fence: print(f"{ansi('0m')}", end="", flush=True)
@@ -220,7 +229,10 @@ def stream_chat(messages, model):
         stop_event.set(); spinner_thread.join(); interrupted = True
         if buffer:
             if in_xml_tag: print(buffer, end="", flush=True)
-            elif in_code_fence: print(f"{ansi('48;5;236;37m')}{buffer}", end="", flush=True)
+            elif in_code_fence:
+                code_lines = buffer.split('\n')
+                code_out = '\n'.join(f"{line}{ansi('K')}" if i < len(code_lines) - 1 else line for i, line in enumerate(code_lines))
+                print(f"{ansi('48;5;236;37m')}{code_out}", end="", flush=True)
             else: md_buffer += buffer
         flush_md()
         if in_code_fence: print(f"{ansi('0m')}", end="", flush=True)
