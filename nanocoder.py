@@ -65,7 +65,6 @@ def stream_chat(messages, model):
                             print(buffer[:match.start()], end="", flush=True); tag = match.group(0); color = get_tag_color(tag)
                             print(f"{ansi(color)}{tag}{ansi('0m')}" if color else tag, end="", flush=True); buffer = buffer[match.end():]
                         else:
-                            # Check if buffer might contain an incomplete tag - hold back from '<' onwards
                             lt_pos = buffer.rfind('<')
                             if lt_pos != -1:
                                 print(buffer[:lt_pos], end="", flush=True); buffer = buffer[lt_pos:]
@@ -80,7 +79,6 @@ def stream_chat(messages, model):
 
 def apply_edits(text, root):
     changes = 0
-    # Handle file creation
     for path, content in re.findall(rf'<{TAG_CREATE} path="(.*?)">(.*?)</{TAG_CREATE}>', text, re.DOTALL):
         filepath = Path(root, path)
         if filepath.exists(): print(f"{ansi('31m')}Skip create {path} (already exists){ansi('0m')}"); continue
@@ -92,7 +90,6 @@ def apply_edits(text, root):
         filepath.write_text(content)
         for line in content.splitlines(): print(f"{ansi('32m')}+{line}{ansi('0m')}")
         print(f"{ansi('32m')}Created {path}{ansi('0m')}"); changes += 1
-    # Handle file edits
     for path, find_text, replace_text in re.findall(rf'<{TAG_EDIT} path="(.*?)">\s*<{TAG_FIND}>(.*?)</{TAG_FIND}>\s*<{TAG_REPLACE}>(.*?)</{TAG_REPLACE}>\s*</{TAG_EDIT}>', text, re.DOTALL):
         filepath = Path(root, path)
         if not filepath.exists(): print(f"{ansi('31m')}Skip {path} (not found){ansi('0m')}"); continue
