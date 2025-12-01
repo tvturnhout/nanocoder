@@ -1,9 +1,12 @@
 # curl -o ~/nanocoder.py https://raw.githubusercontent.com/koenvaneijk/nanocoder/refs/heads/main/nanocoder.py
-VERSION = 34
+VERSION = 35
+MEMORY_LIMIT = int(os.getenv("NANOCODER_MEMORY_LIMIT", "0"))  # Token limit, 0 = disabled
 TAGS = {"edit": "edit", "find": "find", "replace": "replace", "request": "request_files", "drop": "drop_files", "commit": "commit_message", "shell": "shell_command", "create": "create"}
 SYSTEM_PROMPT = f'You are a coding expert. Answer any questions the user might have. If the user asks you to modify code, use this XML format:\n[{TAGS["edit"]} path="file.py"]\n[{TAGS["find"]}]exact code to replace[/{TAGS["find"]}]\n[{TAGS["replace"]}]new code[/{TAGS["replace"]}]\n[/{TAGS["edit"]}]\nTo delete, leave [{TAGS["replace"]}] empty. To create a new file: [{TAGS["create"]} path="new_file.py"]file content[/{TAGS["create"]}].\nTo request files content: [{TAGS["request"]}]path/f.py[/{TAGS["request"]}].\nTo drop irrelevant files from context to save cognitive capacity: [{TAGS["drop"]}]path/f.py[/{TAGS["drop"]}].\nTo run a shell command: [{TAGS["shell"]}]echo hi[/{TAGS["shell"]}]. The tool will ask the user to approve (y/n). After running, the shell output will be returned truncated (first 10 lines, then a TRUNCATED marker, then the last 40 lines; full output if <= 50 lines).\nWhen making edits provide a [{TAGS["commit"]}]...[/{TAGS["commit"]}].'.replace('[', '<').replace(']', '>')
 
 import ast, difflib, glob, json, os, re, subprocess, sys, threading, time, urllib.request, urllib.error, platform, shutil
+
+def count_tokens(text): return len(text) // 4  # ~4 chars per token estimate
 from pathlib import Path
 
 def ansi(code): return f"\033[{code}"
@@ -240,6 +243,28 @@ def stream_chat(messages, model):
     except Exception as err: stop_event.set(); spinner_thread.join(); print(f"\n{styled(f'Err: {err}', '31m')}")
     print("\n"); return full_response, interrupted
 
+def summarize_history(history, model):
+    """Summarize conversation history to reduce tokens."""
+    if not history: return []
+    summary_prompt = [{"role": "system", "content": "Summarize this conversation history concisely, preserving: 1) Key decisions made 2) Current goals/tasks 3) Important context. Be brief."}, {"role": "user", "content": "\n".join(f"{m['role']}: {m['content'][:500]}..." if len(m['content']) > 500 else f"{m['role']}: {m['content']}" for m in history[-20:])}]
+    print(styled("Summarizing history...", "93m"))
+    response, _ = stream_chat(summary_prompt, model)
+    return [{"role": "system", "content": f"[Previous conversation summary]: {response}"}] if response else []
+
+def check_memory(history, context_files, repo_root, model):
+    """Check memory usage and return warnings/actions needed."""
+    history_tokens = sum(count_tokens(m["content"]) for m in history)
+    context_tokens = sum(count_tokens(Path(repo_root, f).read_text()) for f in context_files if Path(repo_root, f).exists())
+    total = history_tokens + context_tokens
+    warnings = []
+    if MEMORY_LIMIT and history_tokens > MEMORY_LIMIT * 0.6:
+        warnings.append(f"History: {history_tokens} tokens ({history_tokens*100//MEMORY_LIMIT}% of limit)")
+    if MEMORY_LIMIT and context_tokens > MEMORY_LIMIT * 0.3:
+        large_files = [(f, count_tokens(Path(repo_root, f).read_text())) for f in context_files if Path(repo_root, f).exists()]
+        large_files.sort(key=lambda x: -x[1])
+        warnings.append(f"Context files: {context_tokens} tokens. Largest: " + ", ".join(f"{f}({t}tok)" for f, t in large_files[:3]))
+    return history_tokens, context_tokens, warnings
+
 def apply_edits(text, root):
     changes = 0
     for path, content in re.findall(rf'<{TAGS["create"]} path="(.*?)">(.*?)</{TAGS["create"]}>', text, re.DOTALL):
@@ -282,12 +307,21 @@ def main():
         if not (user_input := "\n".join(input_lines).strip()): continue
         if user_input.startswith("/"):
             command, _, arg = user_input.partition(" ")
-            if command == "/add": found = [filepath for filepath in glob.glob(arg, root_dir=repo_root, recursive=True) if Path(repo_root, filepath).is_file()]; context_files.update(found); print(f"Added {len(found)} files")
+            if command == "/add":
+                found = [filepath for filepath in glob.glob(arg, root_dir=repo_root, recursive=True) if Path(repo_root, filepath).is_file()]
+                for f in found:
+                    try: tokens = count_tokens(Path(repo_root, f).read_text())
+                    except: tokens = 0
+                    print(f"  {f} ({tokens} tokens)")
+                context_files.update(found); print(f"Added {len(found)} files")
             elif command == "/drop": context_files.discard(arg)
             elif command == "/clear": history = []; print("History cleared.")
             elif command == "/undo": run("git reset --soft HEAD~1")
             elif command == "/exit": print("Bye!"); title(""); break
-            elif command == "/help": print("/add <glob> - Add files to context\n/drop <file> - Remove file from context\n/clear - Clear conversation history\n/undo - Undo last commit\n/update - Update nanocoder\n/exit - Exit\n!<cmd> - Run shell command")
+            elif command == "/help": print("/add <glob> - Add files to context\n/drop <file> - Remove file from context\n/clear - Clear conversation history\n/undo - Undo last commit\n/update - Update nanocoder\n/memory - Show memory usage\n/exit - Exit\n!<cmd> - Run shell command")
+            elif command == "/memory":
+                h_tok, c_tok, _ = check_memory(history, context_files, repo_root, model)
+                print(f"History: {h_tok} tokens, Context: {c_tok} tokens, Total: {h_tok + c_tok} tokens" + (f" (limit: {MEMORY_LIMIT})" if MEMORY_LIMIT else ""))
             elif command == "/update":
                 try: current_content, remote_content = Path(__file__).read_text(), urllib.request.urlopen("https://raw.githubusercontent.com/koenvaneijk/nanocoder/refs/heads/main/nanocoder.py").read().decode(); current_content != remote_content and (Path(__file__).write_text(remote_content), print("Updated! Restarting..."), os.execv(sys.executable, [sys.executable] + sys.argv))
                 except: print("Update failed")
@@ -310,7 +344,19 @@ def main():
             def safe_read(filepath):
                 try: return Path(repo_root, filepath).read_text()
                 except (UnicodeDecodeError, OSError): return "[binary or unreadable file]"
-            context = f"### Repo Map\n{get_map(repo_root)}\n### Files\n" + "\n".join([f"File: {filepath}\n```\n{safe_read(filepath)}\n```" for filepath in context_files if Path(repo_root,filepath).exists()])
+            file_entries = []
+            for filepath in context_files:
+                if Path(repo_root, filepath).exists():
+                    content = safe_read(filepath)
+                    tokens = count_tokens(content)
+                    file_entries.append(f"File: {filepath} ({tokens} tokens)\n```\n{content}\n```")
+            context = f"### Repo Map\n{get_map(repo_root)}\n### Files\n" + "\n".join(file_entries)
+            if MEMORY_LIMIT:
+                h_tok, c_tok, warnings = check_memory(history, context_files, repo_root, model)
+                for w in warnings: print(styled(f"⚠ {w}", "93m"))
+                if h_tok > MEMORY_LIMIT * 0.8:
+                    print(styled("Auto-summarizing history (80% limit reached)...", "93m"))
+                    history = summarize_history(history, model)
             agents_md = load_agents_md(repo_root)
             system_prompt = SYSTEM_PROMPT + (f"\n\n### Project Instructions (AGENTS.md)\n{agents_md}" if agents_md else "")
             messages = [{"role": "system", "content": system_prompt}, {"role": "system", "content": f"System summary: {json.dumps(system_summary(), separators=(',',':'))}"}] + history + [{"role": "user", "content": f"{context}\nRequest: {request}"}]
@@ -331,7 +377,12 @@ def main():
                     elif tag == TAGS["drop"]:
                         context_files.discard(filepath)
             context_files.update(added_files)
-            if added_files: print(styled(f"+{len(added_files)} file(s)", "93m")); request = f"Added files: {', '.join(added_files)}. Please continue."; continue
+            if added_files:
+                for f in added_files:
+                    try: tokens = count_tokens(Path(repo_root, f).read_text())
+                    except: tokens = 0
+                    print(styled(f"  +{f} ({tokens} tokens)", "93m"))
+                request = f"Added files: {', '.join(added_files)}. Please continue."; continue
             shell_commands = re.findall(rf'<{TAGS["shell"]}>(.*?)</{TAGS["shell"]}>', full_response, re.DOTALL)
             if shell_commands:
                 results = []
