@@ -1,4 +1,4 @@
-# curl -o ~/nanocoder.py https://raw.githubusercontent.com/koenvaneijk/nanocoder/refs/heads/main/nanocoder.py
+# curl -o ~/nanocoder.py https://raw.githubusercontent.com/tvturnhout/nanocoder/refs/heads/main/nanocoder.py
 import ast, difflib, glob, json, os, re, subprocess, sys, threading, time, urllib.request, urllib.error, platform, shutil
 from pathlib import Path
 
