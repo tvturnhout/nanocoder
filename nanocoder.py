@@ -313,9 +313,39 @@ def apply_edits(text, root):
     commit_match = re.search(rf'<{TAGS["commit"]}>(.*?)</{TAGS["commit"]}>', text, re.DOTALL)
     if changes: run(f"git add -A && git commit -m '{commit_match.group(1).strip() if commit_match else 'Update'}'")
 
+DANGEROUS_PATTERNS = [
+    r'\brm\s+(-[rf]+\s+)*[/*]',  # rm with root or wildcard
+    r'\brm\s+-rf?\b', r'\brm\s+-fr?\b',  # rm -rf or rm -f
+    r'\bsudo\b',  # sudo commands
+    r'\.env\b',  # .env file access
+    r'\bmkfs\b',  # filesystem format
+    r'\bdd\b',  # disk operations
+    r'>\s*/dev/',  # writing to devices
+    r'\bchmod\s+777\b',  # overly permissive
+    r'\bcurl\b.*\|\s*(ba)?sh',  # curl piped to shell
+    r'\bwget\b.*\|\s*(ba)?sh',  # wget piped to shell
+    r':\(\)\s*\{\s*:\|:&\s*\}\s*;:',  # fork bomb
+    r'\bshutdown\b', r'\breboot\b',  # system control
+    r'\bmv\s+.*\s+/dev/null',  # moving to /dev/null
+    r'\bgit\s+push\b.*-f', r'\bgit\s+push\b.*--force',  # force push
+    r'\bgit\s+reset\b.*--hard',  # hard reset
+    r'\bdrop\s+database\b',  # SQL drop
+    r'\btruncate\b',  # SQL truncate
+    r'api[_-]?key|secret|password|token',  # sensitive data patterns
+]
+
+def is_dangerous_command(cmd):
+    """Check if a command matches dangerous patterns."""
+    cmd_lower = cmd.lower()
+    for pattern in DANGEROUS_PATTERNS:
+        if re.search(pattern, cmd_lower, re.IGNORECASE):
+            return True
+    return False
+
 def main():
     repo_root, context_files, history = run("git rev-parse --show-toplevel") or os.getcwd(), set(), []
     model = os.getenv("OPENAI_MODEL", "gpt-4o")
+    auto_approve = False  # "take the wheel" mode
     print(f"{styled(' nanocoder v' + str(VERSION) + ' ', '47;30m')} {styled(' ' + model + ' ', '47;30m')} {styled(' empty line or µµ to send ', '47;30m')}")
     while True:
         title("❓ nanocoder"); print(f"\a{styled('> ', '1;34m')}", end="", flush=True); input_lines = []
@@ -325,7 +355,9 @@ def main():
                 # Send on empty line after content has been entered, or on "µµ" terminator
                 if (line == "" and input_lines) or line == "µµ":
                     break
-                input_lines.append(line)
+                # Don't add the µµ terminator to input
+                if line != "µµ":
+                    input_lines.append(line)
         except EOFError: pass
         except KeyboardInterrupt: print(); continue
         if not (user_input := "\n".join(input_lines).strip()): continue
@@ -342,7 +374,10 @@ def main():
             elif command == "/clear": history = []; print("History cleared.")
             elif command == "/undo": run("git reset --soft HEAD~1")
             elif command == "/exit": print("Bye!"); title(""); break
-            elif command == "/help": print("/add <glob> - Add files to context\n/drop <file> - Remove file from context\n/clear - Clear conversation history\n/undo - Undo last commit\n/update - Update nanocoder\n/memory - Show memory usage\n/exit - Exit\n!<cmd> - Run shell command")
+            elif command == "/auto":
+                auto_approve = not auto_approve
+                print(styled(f"Auto-approve mode: {'ON (dangerous commands still require approval)' if auto_approve else 'OFF'}", "93m"))
+            elif command == "/help": print("/add <glob> - Add files to context\n/drop <file> - Remove file from context\n/clear - Clear conversation history\n/undo - Undo last commit\n/update - Update nanocoder\n/memory - Show memory usage\n/auto - Toggle auto-approve shell commands\n/exit - Exit\n!<cmd> - Run shell command")
             elif command == "/memory":
                 h_tok, c_tok, _ = check_memory(history, context_files, repo_root, model)
                 print(f"History: {h_tok} tokens, Context: {c_tok} tokens, Total: {h_tok + c_tok} tokens" + (f" (limit: {MEMORY_LIMIT})" if MEMORY_LIMIT else ""))
@@ -412,8 +447,15 @@ def main():
                 results = []
                 for cmd in [s.strip() for s in shell_commands]:
                     print(f"{styled(cmd, '1m')}\n"); title("❓ nanocoder")
-                    try: answer = input("\aRun? (y/n): ").strip().lower()
-                    except EOFError: answer = "n"
+                    dangerous = is_dangerous_command(cmd)
+                    if dangerous:
+                        print(styled("⚠️  Potentially dangerous command detected", "1;31m"))
+                    if auto_approve and not dangerous:
+                        print(styled("Auto-approved", "93m"))
+                        answer = "y"
+                    else:
+                        try: answer = input("\aRun? (y/n): ").strip().lower()
+                        except EOFError: answer = "n"
                     if answer == "y":
                         try: output_lines, exit_code = run_shell_interactive(cmd); results.append(f"$ {cmd}\nexit={exit_code}\n" + "\n".join(truncate(output_lines)))
                         except Exception as err: results.append(f"$ {cmd}\nerror: {err}")
