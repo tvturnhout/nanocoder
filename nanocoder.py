@@ -316,14 +316,14 @@ def apply_edits(text, root):
 def main():
     repo_root, context_files, history = run("git rev-parse --show-toplevel") or os.getcwd(), set(), []
     model = os.getenv("OPENAI_MODEL", "gpt-4o")
-    print(f"{styled(' nanocoder v' + str(VERSION) + ' ', '47;30m')} {styled(' ' + model + ' ', '47;30m')} {styled(' empty line to send ', '47;30m')}")
+    print(f"{styled(' nanocoder v' + str(VERSION) + ' ', '47;30m')} {styled(' ' + model + ' ', '47;30m')} {styled(' empty line or µµ to send ', '47;30m')}")
     while True:
         title("❓ nanocoder"); print(f"\a{styled('> ', '1;34m')}", end="", flush=True); input_lines = []
         try:
             while True:
                 line = input()
-                # Send on empty line after content has been entered
-                if line == "" and input_lines:
+                # Send on empty line after content has been entered, or on "µµ" terminator
+                if (line == "" and input_lines) or line == "µµ":
                     break
                 input_lines.append(line)
         except EOFError: pass
