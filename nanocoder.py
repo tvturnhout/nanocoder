@@ -353,7 +353,7 @@ def main():
             context = f"### Repo Map\n{get_map(repo_root)}\n### Files\n" + "\n".join(file_entries)
             if MEMORY_LIMIT:
                 h_tok, c_tok, warnings = check_memory(history, context_files, repo_root, model)
-                for w in warnings: print(styled(f"⚠ {w}", "93m"))
+                for w in warnings: print(styled(f"Warning: {w}", "93m"))
                 if h_tok > MEMORY_LIMIT * 0.8:
                     print(styled("Auto-summarizing history (80% limit reached)...", "93m"))
                     history = summarize_history(history, model)
