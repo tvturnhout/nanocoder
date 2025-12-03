@@ -1,40 +1,17 @@
-# curl -o ~/nanocoder.py https://raw.githubusercontent.com/tvturnhout/nanocoder/refs/heads/main/nanocoder.py
+VERSION = 37
+TAGS = {"edit": "edit", "find": "find", "replace": "replace", "request": "request_files", "drop": "drop_files", "commit": "commit_message", "shell": "shell_command", "create": "create"}
+SYSTEM_PROMPT = f'You are a coding expert. Answer any questions the user might have. If the user asks you to modify code, use this XML format:\n[{TAGS["edit"]} path="file.py"]\n[{TAGS["find"]}]exact code to replace[/{TAGS["find"]}]\n[{TAGS["replace"]}]new code[/{TAGS["replace"]}]\n[/{TAGS["edit"]}]\nTo delete, leave [{TAGS["replace"]}] empty. To create a new file: [{TAGS["create"]} path="new_file.py"]file content[/{TAGS["create"]}].\nTo request files (one path per line):\n[{TAGS["request"]}]\npath/file1.py\npath/file2.py\n[/{TAGS["request"]}]\nTo drop files from context (one path per line):\n[{TAGS["drop"]}]\npath/file.py\n[/{TAGS["drop"]}]\nTo run a shell command: [{TAGS["shell"]}]echo hi[/{TAGS["shell"]}]. The tool will ask the user to approve (y/n). After running, the shell output will be returned truncated (first 10 lines, then a TRUNCATED marker, then the last 40 lines; full output if <= 50 lines).\nWhen making edits provide a [{TAGS["commit"]}]...[/{TAGS["commit"]}].'.replace('[', '<').replace(']', '>')
+
 import ast, difflib, glob, json, os, re, subprocess, sys, threading, time, urllib.request, urllib.error, platform, shutil
 from pathlib import Path
 
-VERSION = 35
-MEMORY_LIMIT = int(os.getenv("NANOCODER_MEMORY_LIMIT", "0"))  # Token limit, 0 = disabled
-TAGS = {"edit": "edit", "find": "find", "replace": "replace", "request": "request_files", "drop": "drop_files", "commit": "commit_message", "shell": "shell_command", "create": "create"}
-SYSTEM_PROMPT = f'You are a coding expert. Answer any questions the user might have. If the user asks you to modify code, use this XML format:\n[{TAGS["edit"]} path="file.py"]\n[{TAGS["find"]}]exact code to replace[/{TAGS["find"]}]\n[{TAGS["replace"]}]new code[/{TAGS["replace"]}]\n[/{TAGS["edit"]}]\nTo delete, leave [{TAGS["replace"]}] empty. To create a new file: [{TAGS["create"]} path="new_file.py"]file content[/{TAGS["create"]}].\nTo request files content: [{TAGS["request"]}]path/f.py[/{TAGS["request"]}].\nTo drop irrelevant files from context to save cognitive capacity: [{TAGS["drop"]}]path/f.py[/{TAGS["drop"]}].\nTo run a shell command: [{TAGS["shell"]}]echo hi[/{TAGS["shell"]}]. The tool will ask the user to approve (y/n). After running, the shell output will be returned truncated (first 10 lines, then a TRUNCATED marker, then the last 40 lines; full output if <= 50 lines).\nWhen making edits provide a [{TAGS["commit"]}]...[/{TAGS["commit"]}].'.replace('[', '<').replace(']', '>')
-def count_tokens(text): return len(text) // 4  # ~4 chars per token estimate
-
-# Enable ANSI escape codes on Windows
-_ANSI_ENABLED = True
-if sys.platform == "win32":
-    try:
-        import ctypes
-        kernel32 = ctypes.windll.kernel32
-        # Enable VIRTUAL_TERMINAL_PROCESSING for stdout
-        handle = kernel32.GetStdHandle(-11)  # STD_OUTPUT_HANDLE
-        mode = ctypes.c_ulong()
-        kernel32.GetConsoleMode(handle, ctypes.byref(mode))
-        kernel32.SetConsoleMode(handle, mode.value | 0x0004)  # ENABLE_VIRTUAL_TERMINAL_PROCESSING
-    except:
-        _ANSI_ENABLED = False
-
-def ansi(code): return f"\033[{code}" if _ANSI_ENABLED else ""
-def styled(text, style): return f"{ansi(style)}{text}{ansi('0m')}" if _ANSI_ENABLED else text
+def ansi(code): return f"\033[{code}"
+def styled(text, style): return f"{ansi(style)}{text}{ansi('0m')}"
 def run(shell_cmd):
     try: return subprocess.check_output(shell_cmd, shell=True, text=True, stderr=subprocess.STDOUT).strip()
     except: return None
-_TMUX_WIN = run("tmux display-message -p '#{window_id}' 2>/dev/null") if sys.platform != "win32" else None
-def title(t):
-    if sys.platform == "win32":
-        try: ctypes.windll.kernel32.SetConsoleTitleW(t)
-        except: pass
-    else:
-        print(f"\033]0;{t}\007", end="", flush=True)
-    _TMUX_WIN and run(f"tmux rename-window -t {_TMUX_WIN} {t!r} 2>/dev/null")
+_TMUX_WIN = run("tmux display-message -p '#{window_id}' 2>/dev/null")
+def title(t): print(f"\033]0;{t}\007", end="", flush=True); _TMUX_WIN and run(f"tmux rename-window -t {_TMUX_WIN} {t!r} 2>/dev/null")
 _CACHED_SYSTEM_INFO = None
 def system_summary():
     global _CACHED_SYSTEM_INFO
@@ -46,60 +23,30 @@ def system_summary():
     except: _CACHED_SYSTEM_INFO = {}
     return _CACHED_SYSTEM_INFO
 
-def load_agents_md(root):
-    """Load AGENTS.md from root directory if it exists."""
-    agents_path = Path(root, "AGENTS.md")
-    if agents_path.exists():
-        try: return agents_path.read_text()
-        except: pass
-    return None
-
-def get_map(root):
-    output = []
-    for filepath in (run(f"git -C {root} ls-files") or "").splitlines():
+def get_map(root, max_defs=50):
+    files = (run(f"git -C {root} ls-files") or "").splitlines()
+    # Sort by depth (shallow first), then alphabetically
+    files = sorted(files, key=lambda f: (f.count('/'), f))
+    py_files = [f for f in files if f.endswith('.py')]
+    output, count = [], 0
+    for filepath in py_files:
+        if count >= max_defs: break
         if not Path(root, filepath).exists(): continue
         try:
             definitions = [node.name for node in ast.parse(Path(root, filepath).read_text()).body if isinstance(node, (ast.FunctionDef, ast.ClassDef))]
-            if definitions: output.append(f"{filepath}: " + ", ".join(definitions))
+            if definitions: output.append(f"{filepath}: " + ", ".join(definitions)); count += 1
         except: pass
-    return "\n".join(output)
+    # Directory summary
+    dirs = {}
+    for f in files:
+        d = f.rsplit('/', 1)[0] if '/' in f else '.'
+        dirs[d] = dirs.get(d, 0) + 1
+    top_dirs = sorted(dirs.items(), key=lambda x: -x[1])[:10]
+    summary = f"({len(files)} files, {len(py_files)} py) " + ", ".join(f"{d}({n})" for d, n in top_dirs)
+    return summary + "\n" + "\n".join(output)
 
 TAG_COLORS = {TAGS["shell"]: '46;30m', TAGS["find"]: '41;37m', TAGS["replace"]: '42;30m', TAGS["commit"]: '44;37m', TAGS["request"]: '45;37m', TAGS["drop"]: '45;37m', TAGS["edit"]: '43;30m', TAGS["create"]: '43;30m'}
 def get_tag_color(tag): return next((c for t, c in TAG_COLORS.items() if t in tag), None)
-
-def format_table(lines):
-    """Parse and format a markdown table with proper column alignment."""
-    rows = []
-    for line in lines:
-        cells = [c.strip() for c in line.strip().strip('|').split('|')]
-        rows.append(cells)
-    if len(rows) < 2: return '\n'.join(lines)
-    col_count = max(len(row) for row in rows)
-    col_widths = [0] * col_count
-    for i, row in enumerate(rows):
-        if i == 1: continue  # Skip separator row for width calculation
-        for j, cell in enumerate(row):
-            if j < col_count: col_widths[j] = max(col_widths[j], len(cell))
-    col_widths = [max(w, 3) for w in col_widths]  # Minimum width of 3
-    bg, sep = '48;5;236', '38;5;245'  # Dark gray background, medium gray separators
-    total_width = sum(col_widths) + (col_count * 3) + 1  # cells + padding + separators
-    top_border = f"{ansi(f'{bg};{sep}m')} ┌" + '┬'.join('─' * (w + 2) for w in col_widths) + f"┐ {ansi('0m')}"
-    mid_divider = f"{ansi(f'{bg};{sep}m')} ├" + '┼'.join('─' * (w + 2) for w in col_widths) + f"┤ {ansi('0m')}"
-    bot_border = f"{ansi(f'{bg};{sep}m')} └" + '┴'.join('─' * (w + 2) for w in col_widths) + f"┘ {ansi('0m')}"
-    empty_line = f"{ansi(f'{bg}m')} {' ' * total_width} {ansi('0m')}"
-    result = [empty_line, top_border]  # Top padding and border
-    for i, row in enumerate(rows):
-        while len(row) < col_count: row.append('')
-        if i == 1:  # Separator row
-            result.append(mid_divider)
-        elif i == 0:  # Header row
-            cells = [f"{ansi(f'{bg};1m')} {cell.ljust(col_widths[j])} {ansi('0m')}" for j, cell in enumerate(row)]
-            result.append(f"{ansi(f'{bg}m')} {ansi(f'{sep}m')}│{ansi('0m')}" + f"{ansi(f'{bg};{sep}m')}│{ansi('0m')}".join(cells) + f"{ansi(f'{bg};{sep}m')}│{ansi('0m')}{ansi(f'{bg}m')} {ansi('0m')}")
-        else:  # Data rows
-            cells = [f" {cell.ljust(col_widths[j])} " for j, cell in enumerate(row)]
-            result.append(f"{ansi(f'{bg}m')} {ansi(f'{sep}m')}│{ansi('0m')}{ansi(f'{bg}m')}" + f"{ansi(f'{sep}m')}│{ansi('0m')}{ansi(f'{bg}m')}".join(cells) + f"{ansi(f'{sep}m')}│{ansi('0m')}{ansi(f'{bg}m')} {ansi('0m')}")
-    result.extend([bot_border, empty_line])  # Bottom border and padding
-    return '\n'.join(result)
 
 def render_md(text):
     parts = re.split(r'(```[\s\S]*?```|`[^`\n]+`)', text)
@@ -116,28 +63,6 @@ def render_md(text):
         elif part.startswith('`') and part.endswith('`'):
             result.append(f"{ansi('48;5;236m')}{part[1:-1]}{ansi('0m')}")
         else:
-            # Process tables before other markdown
-            def process_tables(text):
-                lines = text.split('\n')
-                output, i = [], 0
-                while i < len(lines):
-                    # Check if this could be start of a table (need at least 2 more lines)
-                    if i + 1 < len(lines) and '|' in lines[i]:
-                        # Check if next line is a separator row
-                        sep_pattern = r'^\|?[\s]*:?-+:?[\s]*(\|[\s]*:?-+:?[\s]*)+\|?$'
-                        if re.match(sep_pattern, lines[i + 1].strip()):
-                            # Found a table, collect all rows
-                            table_lines = [lines[i], lines[i + 1]]
-                            i += 2
-                            while i < len(lines) and '|' in lines[i] and lines[i].strip():
-                                table_lines.append(lines[i])
-                                i += 1
-                            output.append(format_table(table_lines))
-                            continue
-                    output.append(lines[i])
-                    i += 1
-                return '\n'.join(output)
-            part = process_tables(part)
             part = re.sub(r'\[([^\]]+)\]\(([^)]+)\)', lambda m: f"\033]8;;{m.group(2)}\033\\{ansi('4;34m')}{m.group(1)}{ansi('0m')}\033]8;;\033\\", part)
             part = re.sub(r'\*\*(.+?)\*\*', lambda m: f"{ansi('1m')}{m.group(1)}{ansi('22m')}", part)
             part = re.sub(r'(?<!\*)\*([^*]+?)\*(?!\*)', lambda m: f"{ansi('3m')}{m.group(1)}{ansi('23m')}", part)
@@ -151,6 +76,8 @@ def render_md(text):
             result.append(part)
     return ''.join(result)
 def truncate(lines, n=50): return lines if len(lines) <= n else lines[:10] + ["[TRUNCATED]"] + lines[-40:]
+DANGEROUS_PATTERNS = [re.compile(p, re.I) for p in [r'\brm\s+(-[a-z]*[rf]|/)', r'\b(sudo|su)\b', r'\bmkfs\b', r'\bdd\b', r'\b(shutdown|reboot|halt|poweroff)\b', r'>\s*/dev/', r'\bchmod\s+777', r'(curl|wget).*\|\s*(ba)?sh', r'git\s+push\s+(-f|--force)', r'git\s+reset\s+--hard', r'git\s+clean\s+-[a-z]*f', r'\bkill\s+-9', r'\b(killall|pkill)\b', r':()\s*{\s*:|:\s*&\s*};']]
+def is_dangerous(cmd): return any(p.search(cmd) for p in DANGEROUS_PATTERNS)
 def run_shell_interactive(cmd):
     output_lines, process = [], subprocess.Popen(cmd, shell=True, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
     try:
@@ -262,28 +189,6 @@ def stream_chat(messages, model):
     except Exception as err: stop_event.set(); spinner_thread.join(); print(f"\n{styled(f'Err: {err}', '31m')}")
     print("\n"); return full_response, interrupted
 
-def summarize_history(history, model):
-    """Summarize conversation history to reduce tokens."""
-    if not history: return []
-    summary_prompt = [{"role": "system", "content": "Summarize this conversation history concisely, preserving: 1) Key decisions made 2) Current goals/tasks 3) Important context. Be brief."}, {"role": "user", "content": "\n".join(f"{m['role']}: {m['content'][:500]}..." if len(m['content']) > 500 else f"{m['role']}: {m['content']}" for m in history[-20:])}]
-    print(styled("Summarizing history...", "93m"))
-    response, _ = stream_chat(summary_prompt, model)
-    return [{"role": "system", "content": f"[Previous conversation summary]: {response}"}] if response else []
-
-def check_memory(history, context_files, repo_root, model):
-    """Check memory usage and return warnings/actions needed."""
-    history_tokens = sum(count_tokens(m["content"]) for m in history)
-    context_tokens = sum(count_tokens(Path(repo_root, f).read_text()) for f in context_files if Path(repo_root, f).exists())
-    total = history_tokens + context_tokens
-    warnings = []
-    if MEMORY_LIMIT and history_tokens > MEMORY_LIMIT * 0.6:
-        warnings.append(f"History: {history_tokens} tokens ({history_tokens*100//MEMORY_LIMIT}% of limit)")
-    if MEMORY_LIMIT and context_tokens > MEMORY_LIMIT * 0.3:
-        large_files = [(f, count_tokens(Path(repo_root, f).read_text())) for f in context_files if Path(repo_root, f).exists()]
-        large_files.sort(key=lambda x: -x[1])
-        warnings.append(f"Context files: {context_tokens} tokens. Largest: " + ", ".join(f"{f}({t}tok)" for f, t in large_files[:3]))
-    return history_tokens, context_tokens, warnings
-
 def apply_edits(text, root):
     changes = 0
     for path, content in re.findall(rf'<{TAGS["create"]} path="(.*?)">(.*?)</{TAGS["create"]}>', text, re.DOTALL):
@@ -313,56 +218,25 @@ def apply_edits(text, root):
     commit_match = re.search(rf'<{TAGS["commit"]}>(.*?)</{TAGS["commit"]}>', text, re.DOTALL)
     if changes: run(f"git add -A && git commit -m '{commit_match.group(1).strip() if commit_match else 'Update'}'")
 
-DANGEROUS_PATTERNS = [r'\brm\s+-[rf]', r'\bsudo\b', r'\.env\b', r'\bmkfs\b', r'\bdd\b', r'>\s*/dev/', r'\bchmod\s+777', r'\b(curl|wget)\b.*\|\s*(ba)?sh', r'\b(shutdown|reboot)\b', r'\bgit\s+(push\s+.*-f|reset\s+.*--hard)', r'\b(drop\s+database|truncate)\b', r'(api[_-]?key|secret|password|token)']
-def is_dangerous(cmd): return any(re.search(p, cmd, re.I) for p in DANGEROUS_PATTERNS)
-
 def main():
-    repo_root, context_files, history, auto_approve = run("git rev-parse --show-toplevel") or os.getcwd(), set(), [], False
+    repo_root, context_files, history = run("git rev-parse --show-toplevel") or os.getcwd(), set(), []
     model = os.getenv("OPENAI_MODEL", "gpt-4o")
-    print(f"{styled(' nanocoder v' + str(VERSION) + ' ', '47;30m')} {styled(' ' + model + ' ', '47;30m')} {styled(' /auto for autopilot ', '47;30m')}")
+    print(f"{styled(' nanocoder v' + str(VERSION) + ' ', '47;30m')} {styled(' ' + model + ' ', '47;30m')} {styled(' ctrl+d to send ', '47;30m')}")
     while True:
         title("❓ nanocoder"); print(f"\a{styled('> ', '1;34m')}", end="", flush=True); input_lines = []
         try:
-            while True:
-                line = input()
-                # Send on empty line after content has been entered, or on "µµ" terminator
-                if (line == "" and input_lines) or line == "µµ":
-                    break
-                # Don't add the µµ terminator to input
-                if line != "µµ":
-                    input_lines.append(line)
+            while True: input_lines.append(input())
         except EOFError: pass
         except KeyboardInterrupt: print(); continue
         if not (user_input := "\n".join(input_lines).strip()): continue
         if user_input.startswith("/"):
             command, _, arg = user_input.partition(" ")
-            if command == "/add":
-                found = [filepath for filepath in glob.glob(arg, root_dir=repo_root, recursive=True) if Path(repo_root, filepath).is_file()]
-                for f in found:
-                    try: tokens = count_tokens(Path(repo_root, f).read_text())
-                    except: tokens = 0
-                    print(f"  {f} ({tokens} tokens)")
-                context_files.update(found); print(f"Added {len(found)} files")
+            if command == "/add": found = [filepath for filepath in glob.glob(arg, root_dir=repo_root, recursive=True) if Path(repo_root, filepath).is_file()]; context_files.update(found); print(f"Added {len(found)} files")
             elif command == "/drop": context_files.discard(arg)
             elif command == "/clear": history = []; print("History cleared.")
             elif command == "/undo": run("git reset --soft HEAD~1")
             elif command == "/exit": print("Bye!"); title(""); break
-            elif command == "/auto": auto_approve = not auto_approve; print(styled(f"Auto: {'ON' if auto_approve else 'OFF'}", "93m"))
-            elif command == "/help": print("""/add <glob>  - Add files to context
-/drop <file> - Remove file from context
-/clear       - Clear conversation history
-/undo        - Undo last commit
-/update      - Update nanocoder
-/memory      - Show memory usage
-/auto        - Toggle auto-approve mode (Jesus take the wheel)
-/exit        - Exit
-!<cmd>       - Run shell command""")
-            elif command == "/memory":
-                h_tok, c_tok, _ = check_memory(history, context_files, repo_root, model)
-                print(f"History: {h_tok} tokens, Context: {c_tok} tokens, Total: {h_tok + c_tok} tokens" + (f" (limit: {MEMORY_LIMIT})" if MEMORY_LIMIT else ""))
-            elif command == "/update":
-                try: current_content, remote_content = Path(__file__).read_text(), urllib.request.urlopen("https://raw.githubusercontent.com/koenvaneijk/nanocoder/refs/heads/main/nanocoder.py").read().decode(); current_content != remote_content and (Path(__file__).write_text(remote_content), print("Updated! Restarting..."), os.execv(sys.executable, [sys.executable] + sys.argv))
-                except: print("Update failed")
+            elif command == "/help": print("/add <glob> - Add files to context\n/drop <file> - Remove file from context\n/clear - Clear conversation history\n/undo - Undo last commit\n/exit - Exit\n!<cmd> - Run shell command")
             continue
 
         if user_input.startswith("!"):
@@ -382,27 +256,11 @@ def main():
             def safe_read(filepath):
                 try: return Path(repo_root, filepath).read_text()
                 except (UnicodeDecodeError, OSError): return "[binary or unreadable file]"
-            file_entries = []
-            for filepath in context_files:
-                if Path(repo_root, filepath).exists():
-                    content = safe_read(filepath)
-                    tokens = count_tokens(content)
-                    file_entries.append(f"File: {filepath} ({tokens} tokens)\n```\n{content}\n```")
-            context = f"### Repo Map\n{get_map(repo_root)}\n### Files\n" + "\n".join(file_entries)
-            if MEMORY_LIMIT:
-                h_tok, c_tok, warnings = check_memory(history, context_files, repo_root, model)
-                for w in warnings: print(styled(f"Warning: {w}", "93m"))
-                if h_tok > MEMORY_LIMIT * 0.8:
-                    print(styled("Auto-summarizing history (80% limit reached)...", "93m"))
-                    history = summarize_history(history, model)
-            agents_md = load_agents_md(repo_root)
-            system_prompt = SYSTEM_PROMPT + (f"\n\n### Project Instructions (AGENTS.md)\n{agents_md}" if agents_md else "")
+            context = f"### Repo Map\n{get_map(repo_root)}\n### Files\n" + "\n".join([f"File: {filepath}\n```\n{safe_read(filepath)}\n```" for filepath in context_files if Path(repo_root,filepath).exists()])
+            system_prompt = SYSTEM_PROMPT
             messages = [{"role": "system", "content": system_prompt}, {"role": "system", "content": f"System summary: {json.dumps(system_summary(), separators=(',',':'))}"}] + history + [{"role": "user", "content": f"{context}\nRequest: {request}"}]
             title("⏳ nanocoder"); full_response, interrupted = stream_chat(messages, model)
             if full_response is None: break
-            if MEMORY_LIMIT:
-                h_tok, c_tok, _ = check_memory(history + [{"role": "user", "content": request}, {"role": "assistant", "content": full_response}], context_files, repo_root, model)
-                print(styled(f"[{h_tok + c_tok}/{MEMORY_LIMIT} tokens]", "90m"))
             response_content = full_response + ("\n\n[user interrupted]" if interrupted else "")
             history.extend([{"role": "user", "content": request}, {"role": "assistant", "content": response_content}])
             if interrupted: break
@@ -418,20 +276,19 @@ def main():
                     elif tag == TAGS["drop"]:
                         context_files.discard(filepath)
             context_files.update(added_files)
-            if added_files:
-                for f in added_files:
-                    try: tokens = count_tokens(Path(repo_root, f).read_text())
-                    except: tokens = 0
-                    print(styled(f"  +{f} ({tokens} tokens)", "93m"))
-                request = f"Added files: {', '.join(added_files)}. Please continue."; continue
+            tok_hist, tok_files = sum(len(m.get("content","")) for m in history)//4, len(context)//4
+            if added_files: print(styled(f"+{len(added_files)} file(s) (~{tok_hist//1000}k hist, ~{tok_files//1000}k files)", "93m")); request = f"Added files: {', '.join(added_files)}. Please continue."; continue
+            print(styled(f"~{tok_hist//1000}k hist, ~{tok_files//1000}k files", "90m"))
             shell_commands = re.findall(rf'<{TAGS["shell"]}>(.*?)</{TAGS["shell"]}>', full_response, re.DOTALL)
             if shell_commands:
                 results = []
                 for cmd in [s.strip() for s in shell_commands]:
-                    print(f"{styled(cmd, '1m')}\n"); title("❓ nanocoder"); danger = is_dangerous(cmd)
-                    if danger: print(styled("! dangerous", "1;31m"))
-                    try: answer = "y" if auto_approve and not danger else input("\aRun? (y/n): ").strip().lower()
-                    except EOFError: answer = "n"
+                    print(f"{styled(cmd, '1m')}\n"); title("❓ nanocoder")
+                    if is_dangerous(cmd):
+                        print(styled("⚠ Dangerous command detected", "1;31m"))
+                        try: answer = input("\aRun? (y/n): ").strip().lower()
+                        except EOFError: answer = "n"
+                    else: answer = "y"
                     if answer == "y":
                         try: output_lines, exit_code = run_shell_interactive(cmd); results.append(f"$ {cmd}\nexit={exit_code}\n" + "\n".join(truncate(output_lines)))
                         except Exception as err: results.append(f"$ {cmd}\nerror: {err}")
