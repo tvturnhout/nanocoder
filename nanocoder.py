@@ -1,4 +1,4 @@
-VERSION = 49
+VERSION = 50
 TAGS = dict(edit="edit", find="find", replace="replace", request="request_files", drop="drop_files", commit="commit_message", shell="bash", create="create", detail="detail_map")
 SYSTEM_PROMPT = f'''You are an assistant with expert coding capabilities and Bash scripting skills. Answer any questions the user might have.
 
@@ -496,8 +496,22 @@ def main():
             if added_files: print(styled(f"+{len(added_files)} file(s)", "93m")); request = f"Added files: {', '.join(added_files)}. Please continue."; continue
             shell_commands = re.findall(rf'<{TAGS["shell"]}>(.*?)</{TAGS["shell"]}>', full_response, re.DOTALL)
             if shell_commands:
+                # Process only the FIRST shell command, then loop back for fresh context
+                raw_cmd = shell_commands[0].strip()
+                # Strip leading comment lines (# ...) that some models add
+                cmd_lines = raw_cmd.split('\n')
+                cmd_lines = [l for l in cmd_lines if not l.strip().startswith('#') or l.strip().startswith('#!')]
+                cmd = '\n'.join(cmd_lines).strip()
+                
+                if not cmd:
+                    # Command was only comments, skip it
+                    if len(shell_commands) > 1:
+                        request = "The first shell command was empty (only comments). Please provide the actual command."
+                        continue
+                    break
+                
                 results, denied = [], False
-                for cmd in [s.strip() for s in shell_commands]:
+                for cmd in [cmd]:  # Single iteration, keeping structure for results handling
                     # Detect file-reading commands and suggest request_files instead
                     file_read_match = re.match(r'^(cat|head|tail|less|more|bat)\s+([^\s|>]+)', cmd)
                     if file_read_match:
@@ -523,6 +537,8 @@ def main():
                         except Exception as err: results.append(f"$ {cmd}\nerror: {err}")
                     else: denied = True; break
                 if denied: break
-                request = "Shell results:\n" + "\n\n".join(results) + "\nPlease continue."; continue
+                pending_note = f"\n\nNote: You sent {len(shell_commands)} shell commands but I only run one at a time. Send the next command if needed." if len(shell_commands) > 1 else ""
+                request = "Shell results:\n" + "\n\n".join(results) + pending_note + "\nPlease continue."; continue
             break
+
 if __name__ == "__main__": main()
