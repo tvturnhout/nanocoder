@@ -30,23 +30,45 @@ def load_agents_md(root):
         except: pass
     return None
 
-def get_map(root, max_files=100):
+def fmt_size(b):
+    for u in ['B','KB','MB','GB']: 
+        if b < 1024: return f"{b:.1f}{u}" if u != 'B' else f"{b}B"
+        b /= 1024
+    return f"{b:.1f}TB"
+
+def get_map(root, max_depth=3, max_items=80):
+    SKIP = {'.git'}
+    NO_DESCEND = {'node_modules', '__pycache__', 'venv', '.venv', '.tox', 'dist', 'build', '.eggs', '.mypy_cache', '.pytest_cache', '.ruff_cache', 'htmlcov', '.coverage', 'env', '.env', '.cache', 'vendor', 'bower_components'}
     BINARY_EXT = {'.png','.jpg','.jpeg','.gif','.ico','.webp','.bmp','.mp3','.mp4','.wav','.avi','.mov','.zip','.tar','.gz','.rar','.7z','.pdf','.exe','.dll','.so','.dylib','.pyc','.woff','.woff2','.ttf','.eot'}
-    EXCLUDE_DIRS = {'.git', 'node_modules', '__pycache__', 'venv', '.venv', '.tox', 'dist', 'build', '.eggs', '.mypy_cache', '.pytest_cache', '.ruff_cache', 'htmlcov', '.coverage', 'env', '.env'}
-    files = (run(f"git -C {root} ls-files") or "").splitlines()
-    if not files:
-        files = [str(p.relative_to(root)) for p in Path(root).rglob("*") if p.is_file() and not any(ex in p.parts for ex in EXCLUDE_DIRS)]
-    files = sorted(files, key=lambda f: (f.count('/'), f))[:max_files]
-    output = []
-    for f in files:
-        p = Path(root, f)
-        if not p.exists(): continue
-        if p.suffix.lower() in BINARY_EXT: output.append(f"{f} [binary]"); continue
-        defs = ""
-        if f.endswith('.py'):
-            try: defs = ": " + ", ".join(n.name for n in ast.parse(p.read_text()).body if isinstance(n, (ast.FunctionDef, ast.ClassDef)))[:80]
-            except: pass
-        output.append(f"{f}{defs}")
+    output, count = [f"cwd: {root}"], 0
+    for dirpath, dirnames, filenames in os.walk(root, topdown=True):
+        depth = 0 if dirpath == root else dirpath[len(root)+1:].count(os.sep) + 1
+        if depth > max_depth: dirnames[:] = []; continue
+        rel = os.path.relpath(dirpath, root)
+        prefix = "" if rel == "." else rel + "/"
+        dirnames[:] = [d for d in sorted(dirnames) if d not in SKIP]
+        for d in dirnames[:]:
+            if count >= max_items: dirnames[:] = []; break
+            if d in NO_DESCEND:
+                try: n = sum(1 for _ in Path(dirpath, d).rglob("*") if _.is_file())
+                except: n = "?"
+                output.append(f"{prefix}{d}/ [{n} files, excluded]"); dirnames.remove(d); count += 1
+            elif depth >= max_depth - 1:
+                try: n = sum(1 for _ in Path(dirpath, d).rglob("*") if _.is_file())
+                except: n = "?"
+                output.append(f"{prefix}{d}/ [{n} files]"); dirnames.remove(d); count += 1
+        for f in sorted(filenames):
+            if count >= max_items: break
+            p = Path(dirpath, f)
+            try: size = fmt_size(p.stat().st_size)
+            except: size = "?"
+            if p.suffix.lower() in BINARY_EXT: output.append(f"{prefix}{f} ({size}, binary)"); count += 1; continue
+            defs = ""
+            if f.endswith('.py') and depth <= 1:
+                try: defs = ": " + ", ".join(n.name for n in ast.parse(p.read_text()).body if isinstance(n, (ast.FunctionDef, ast.ClassDef)))[:60]
+                except: pass
+            output.append(f"{prefix}{f} ({size}){defs}"); count += 1
+        if count >= max_items: output.append(f"[truncated, showing {count} items]"); break
     return "\n".join(output)
 
 TAG_COLORS = {TAGS["shell"]: '46;30m', TAGS["find"]: '41;37m', TAGS["replace"]: '42;30m', TAGS["commit"]: '44;37m', TAGS["request"]: '45;37m', TAGS["drop"]: '45;37m', TAGS["edit"]: '43;30m', TAGS["create"]: '43;30m'}
