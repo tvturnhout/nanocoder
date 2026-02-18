@@ -143,18 +143,14 @@ def render_md(text):
             result.append(part)
     return ''.join(result)
 
-def truncate(lines, max_lines=50, max_line_len=500, max_total=20000):
-    def trunc_line(ln): return ln if len(ln) <= max_line_len else ln[:max_line_len//2] + f"[…{len(ln)} chars…]" + ln[-max_line_len//4:]
-    lines = [trunc_line(ln) for ln in lines]
-    if len(lines) > max_lines: lines = lines[:10] + [f"[TRUNCATED {len(lines)} lines]"] + lines[-40:]
-    total = sum(len(ln) for ln in lines)
-    if total > max_total:
-        result, size = [], 0
-        for ln in lines:
-            if size + len(ln) > max_total: result.append(f"[OUTPUT TRUNCATED, {total} chars total]"); break
-            result.append(ln); size += len(ln)
-        return result
-    return lines
+def truncate(lines, max_lines=50, max_char=500, max_total=20000):
+    lines = [ln if len(ln) <= max_char else f"{ln[:max_char//2]}[…{len(ln)}c…]{ln[-max_char//4:]}" for ln in lines]
+    if len(lines) > max_lines: lines = lines[:10] + [f"[…{len(lines)} lines…]"] + lines[-40:]
+    out, size = [], 0
+    for ln in lines:
+        if size + len(ln) > max_total: out.append(f"[…truncated, {sum(len(l) for l in lines)}c total]"); break
+        out.append(ln); size += len(ln)
+    return out
 
 def run_shell_interactive(cmd):
     output_lines, process = [], subprocess.Popen(cmd, shell=True, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
