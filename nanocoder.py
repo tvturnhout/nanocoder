@@ -1,4 +1,4 @@
-VERSION = 47
+VERSION = 48
 TAGS = {"edit": "edit", "find": "find", "replace": "replace", "request": "request_files", "drop": "drop_files", "commit": "commit_message", "shell": "shell_command", "create": "create"}
 SYSTEM_PROMPT = f'You are a coding expert. Answer any questions the user might have. Only code if the user asks you to, and use this XML format:\n[{TAGS["edit"]} path="file.py"]\n[{TAGS["find"]}]lines to find[/{TAGS["find"]}]\n[{TAGS["replace"]}]new code[/{TAGS["replace"]}]\n[/{TAGS["edit"]}]\nThe [{TAGS["find"]}] text is replaced literally, so it must match exactly. Keep it short - only enough lines to be unambiguous. Split large changes into multiple small edits.\nTo delete, leave [{TAGS["replace"]}] empty. To create a new file: [{TAGS["create"]} path="new_file.py"]file content[/{TAGS["create"]}].\nTo request files (one path per line):\n[{TAGS["request"]}]\npath/file1.py\npath/file2.py\n[/{TAGS["request"]}]\nTo drop files from context (one path per line):\n[{TAGS["drop"]}]\npath/file.py\n[/{TAGS["drop"]}]\nTo run a shell command: [{TAGS["shell"]}]echo hi[/{TAGS["shell"]}]. The tool will ask the user to approve (y/n). After running, the shell output will be returned truncated (first 10 lines, then a TRUNCATED marker, then the last 40 lines; full output if <= 50 lines).\nWhen making edits provide a [{TAGS["commit"]}]...[/{TAGS["commit"]}].'.replace('[', '<').replace(']', '>')
 
@@ -296,7 +296,7 @@ def main():
     repo_root, context_files, history = run("git rev-parse --show-toplevel") or os.getcwd(), set(), []
     model = os.getenv("OPENAI_MODEL", "gpt-4o")
     fast_model = os.getenv("OPENAI_FAST_MODEL", "gpt-4o-mini")
-    print(f"{styled(' nanocoder v' + str(VERSION) + ' ', '47;30m')} {styled(' ' + model + ' ', '47;30m')} {styled(' ctrl+d to send ', '47;30m')}")
+    print(f"{styled(' nanocoder v' + str(VERSION) + ' ', '47;30m')} {styled(' ' + fast_model + ' ', '47;30m')} {styled(' ! for ' + model + ' ', '47;30m')} {styled(' ctrl+d to send ', '47;30m')}")
     while True:
         title("❓ nanocoder"); print(f"\a{styled('❯ ', '1;34m')}", end="", flush=True); input_lines = []
         try:
@@ -329,12 +329,12 @@ def main():
                 print(f"\n{styled('Copy this command:', '1m')}\n\n{cmd}\n")
                 print(styled(f"Size: {len(cmd)} chars", '90m'))
                 if any('API_KEY' in k for k in env_vars): print(styled("⚠ Warning: contains API key(s)!", '93m'))
-            commands = {"/add": cmd_add, "/drop": lambda: context_files.discard(arg), "/clear": lambda: (history.clear(), print("History cleared.")), "/undo": lambda: run("git reset --soft HEAD~1"), "/export": cmd_export, "/trim": cmd_trim, "/help": lambda: print("/add <glob> - Add files\n/drop <file> - Remove file\n/clear - Clear history\n/trim - Summarize and clear history\n/undo - Undo commit\n/export - Export as portable bash command\n/exit - Exit\n!<cmd> - Shell\nAppend 'fast' to use fast model")}
+            commands = {"/add": cmd_add, "/drop": lambda: context_files.discard(arg), "/clear": lambda: (history.clear(), print("History cleared.")), "/undo": lambda: run("git reset --soft HEAD~1"), "/export": cmd_export, "/trim": cmd_trim, "/help": lambda: print("/add <glob> - Add files\n/drop <file> - Remove file\n/clear - Clear history\n/trim - Summarize and clear history\n/undo - Undo commit\n/export - Export as portable bash command\n/exit - Exit\n$<cmd> - Shell\nEnd with '!' for smart model")}
             if command == "/exit": print("Bye!"); title(""); break
             if command in commands: commands[command]()
             continue
 
-        if user_input.startswith("!"):
+        if user_input.startswith("$"):
             shell_cmd = user_input[1:].strip()
             if shell_cmd:
                 output_lines, exit_code = run_shell_interactive(shell_cmd)
@@ -347,9 +347,9 @@ def main():
                     print(styled("Added to context", "93m"))
             continue
 
-        use_fast = user_input.endswith(" fast")
-        if use_fast: user_input = user_input[:-5].strip()
-        current_model = fast_model if use_fast else model
+        use_smart = user_input.rstrip().endswith("!")
+        if use_smart: user_input = user_input.rstrip()[:-1].strip()
+        current_model = model if use_smart else fast_model
         request = user_input
         while True:
             def read(p):
