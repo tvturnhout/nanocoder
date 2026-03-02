@@ -1,4 +1,4 @@
-VERSION = 45
+VERSION = 46
 TAGS = {"edit": "edit", "find": "find", "replace": "replace", "request": "request_files", "drop": "drop_files", "commit": "commit_message", "shell": "shell_command", "create": "create"}
 SYSTEM_PROMPT = f'You are a coding expert. Answer any questions the user might have. Only code if the user asks you to, and use this XML format:\n[{TAGS["edit"]} path="file.py"]\n[{TAGS["find"]}]lines to find[/{TAGS["find"]}]\n[{TAGS["replace"]}]new code[/{TAGS["replace"]}]\n[/{TAGS["edit"]}]\nThe [{TAGS["find"]}] text is replaced literally, so it must match exactly. Keep it short - only enough lines to be unambiguous. Split large changes into multiple small edits.\nTo delete, leave [{TAGS["replace"]}] empty. To create a new file: [{TAGS["create"]} path="new_file.py"]file content[/{TAGS["create"]}].\nTo request files (one path per line):\n[{TAGS["request"]}]\npath/file1.py\npath/file2.py\n[/{TAGS["request"]}]\nTo drop files from context (one path per line):\n[{TAGS["drop"]}]\npath/file.py\n[/{TAGS["drop"]}]\nTo run a shell command: [{TAGS["shell"]}]echo hi[/{TAGS["shell"]}]. The tool will ask the user to approve (y/n). After running, the shell output will be returned truncated (first 10 lines, then a TRUNCATED marker, then the last 40 lines; full output if <= 50 lines).\nWhen making edits provide a [{TAGS["commit"]}]...[/{TAGS["commit"]}].'.replace('[', '<').replace(']', '>')
 
@@ -142,6 +142,25 @@ def render_md(text):
             part = re.sub(r'^(#{1,3}) (.+)$', format_header, part, flags=re.MULTILINE)
             result.append(part)
     return ''.join(result)
+
+def truncate_content(content, path="", max_tokens=70000, max_line_len=1000):
+    """Truncate content: shorten long lines, then cap total size. ~4 chars/token."""
+    max_chars = max_tokens * 4
+    lines = content.split('\n')
+    # Truncate long lines
+    for i, ln in enumerate(lines):
+        if len(ln) > max_line_len:
+            ext = Path(path).suffix.lower() if path else ""
+            if ext in ('.min.js', '.min.css') or (ext == '.json' and len(ln) > 5000):
+                lines[i] = f"[{ext or 'long'} line, {len(ln)} chars]"
+            else:
+                lines[i] = f"{ln[:max_line_len//2]}[…{len(ln)}c…]{ln[-max_line_len//4:]}"
+    content = '\n'.join(lines)
+    # Cap total size with head + tail
+    if len(content) > max_chars:
+        head_size, tail_size = int(max_chars * 0.8), int(max_chars * 0.15)
+        content = f"{content[:head_size]}\n[…truncated, showing {max_chars//1000}k of {len(content)//1000}k chars…]\n{content[-tail_size:]}"
+    return content
 
 def truncate(lines, max_lines=50, max_char=500, max_total=20000):
     lines = [ln if len(ln) <= max_char else f"{ln[:max_char//2]}[…{len(ln)}c…]{ln[-max_char//4:]}" for ln in lines]
@@ -312,7 +331,8 @@ def main():
                 try: answer = input("\aAdd to context? [t]runcated/[f]ull/[n]o: ").strip().lower()
                 except (EOFError, KeyboardInterrupt): print(); answer = "n"
                 if answer in ("t", "f"):
-                    history.append({"role": "user", "content": f"$ {shell_cmd}\nexit={exit_code}\n" + "\n".join(truncate(output_lines) if answer == "t" else output_lines)})
+                    output = "\n".join(truncate(output_lines) if answer == "t" else output_lines)
+                    history.append({"role": "user", "content": f"$ {shell_cmd}\nexit={exit_code}\n" + truncate_content(output, max_tokens=20000)})
                     print(styled("Added to context", "93m"))
             continue
 
@@ -321,7 +341,7 @@ def main():
             def read(p):
                 f = Path(repo_root, p)
                 if not f.exists(): return ""
-                try: return f.read_text() or "[empty]"
+                try: return truncate_content(f.read_text() or "[empty]", p)
                 except: return "[binary/unreadable]"
             context = f"### Repo Map\n{get_map(repo_root)}\n### Files\n" + "\n".join(f"File: {f}\n```\n{read(f)}\n```" for f in context_files if Path(repo_root,f).exists())
             agents_md = load_agents_md(repo_root)
@@ -365,7 +385,7 @@ def main():
                     try: answer = input("\aRun? (y/n): ").strip().lower()
                     except (EOFError, KeyboardInterrupt): print(); answer = "n"
                     if answer == "y":
-                        try: output_lines, exit_code = run_shell_interactive(cmd); results.append(f"$ {cmd}\nexit={exit_code}\n" + "\n".join(truncate(output_lines)))
+                        try: output_lines, exit_code = run_shell_interactive(cmd); results.append(f"$ {cmd}\nexit={exit_code}\n" + truncate_content("\n".join(truncate(output_lines)), max_tokens=20000))
                         except Exception as err: results.append(f"$ {cmd}\nerror: {err}")
                     else: denied = True; break
                 if denied: break
