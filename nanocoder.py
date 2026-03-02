@@ -1,4 +1,4 @@
-VERSION = 46
+VERSION = 47
 TAGS = {"edit": "edit", "find": "find", "replace": "replace", "request": "request_files", "drop": "drop_files", "commit": "commit_message", "shell": "shell_command", "create": "create"}
 SYSTEM_PROMPT = f'You are a coding expert. Answer any questions the user might have. Only code if the user asks you to, and use this XML format:\n[{TAGS["edit"]} path="file.py"]\n[{TAGS["find"]}]lines to find[/{TAGS["find"]}]\n[{TAGS["replace"]}]new code[/{TAGS["replace"]}]\n[/{TAGS["edit"]}]\nThe [{TAGS["find"]}] text is replaced literally, so it must match exactly. Keep it short - only enough lines to be unambiguous. Split large changes into multiple small edits.\nTo delete, leave [{TAGS["replace"]}] empty. To create a new file: [{TAGS["create"]} path="new_file.py"]file content[/{TAGS["create"]}].\nTo request files (one path per line):\n[{TAGS["request"]}]\npath/file1.py\npath/file2.py\n[/{TAGS["request"]}]\nTo drop files from context (one path per line):\n[{TAGS["drop"]}]\npath/file.py\n[/{TAGS["drop"]}]\nTo run a shell command: [{TAGS["shell"]}]echo hi[/{TAGS["shell"]}]. The tool will ask the user to approve (y/n). After running, the shell output will be returned truncated (first 10 lines, then a TRUNCATED marker, then the last 40 lines; full output if <= 50 lines).\nWhen making edits provide a [{TAGS["commit"]}]...[/{TAGS["commit"]}].'.replace('[', '<').replace(']', '>')
 
@@ -295,6 +295,7 @@ def apply_edits(text, root):
 def main():
     repo_root, context_files, history = run("git rev-parse --show-toplevel") or os.getcwd(), set(), []
     model = os.getenv("OPENAI_MODEL", "gpt-4o")
+    fast_model = os.getenv("OPENAI_FAST_MODEL", "gpt-4o-mini")
     print(f"{styled(' nanocoder v' + str(VERSION) + ' ', '47;30m')} {styled(' ' + model + ' ', '47;30m')} {styled(' ctrl+d to send ', '47;30m')}")
     while True:
         title("❓ nanocoder"); print(f"\a{styled('❯ ', '1;34m')}", end="", flush=True); input_lines = []
@@ -307,6 +308,16 @@ def main():
         if user_input.startswith("/"):
             command, _, arg = user_input.partition(" ")
             def cmd_add(): found = [f for f in glob.glob(arg, root_dir=repo_root, recursive=True) if Path(repo_root, f).is_file()]; context_files.update(found); print(f"Added {len(found)} files")
+            def cmd_trim():
+                if not history: print("Nothing to trim."); return
+                summary_prompt = "Summarize this coding session very concisely (max 200 words): what files were created/modified, what was accomplished, what's in progress. Just the facts."
+                summary_msgs = [{"role": "system", "content": summary_prompt}] + history
+                print(styled("Generating summary...", "90m"))
+                summary, _ = stream_chat(summary_msgs, fast_model)
+                if summary:
+                    history.clear(); context_files.clear()
+                    history.append({"role": "user", "content": f"Session summary (continue from here):\n{summary}"})
+                    print(styled("History and context cleared. Summary preserved.", "93m"))
             def cmd_export():
                 url = "https://raw.githubusercontent.com/koenvaneijk/nanocoder/refs/heads/main/nanocoder.py"
                 env_vars = {}
@@ -318,7 +329,7 @@ def main():
                 print(f"\n{styled('Copy this command:', '1m')}\n\n{cmd}\n")
                 print(styled(f"Size: {len(cmd)} chars", '90m'))
                 if any('API_KEY' in k for k in env_vars): print(styled("⚠ Warning: contains API key(s)!", '93m'))
-            commands = {"/add": cmd_add, "/drop": lambda: context_files.discard(arg), "/clear": lambda: (history.clear(), print("History cleared.")), "/undo": lambda: run("git reset --soft HEAD~1"), "/export": cmd_export, "/help": lambda: print("/add <glob> - Add files\n/drop <file> - Remove file\n/clear - Clear history\n/undo - Undo commit\n/export - Export as portable bash command\n/exit - Exit\n!<cmd> - Shell")}
+            commands = {"/add": cmd_add, "/drop": lambda: context_files.discard(arg), "/clear": lambda: (history.clear(), print("History cleared.")), "/undo": lambda: run("git reset --soft HEAD~1"), "/export": cmd_export, "/trim": cmd_trim, "/help": lambda: print("/add <glob> - Add files\n/drop <file> - Remove file\n/clear - Clear history\n/trim - Summarize and clear history\n/undo - Undo commit\n/export - Export as portable bash command\n/exit - Exit\n!<cmd> - Shell\nAppend 'fast' to use fast model")}
             if command == "/exit": print("Bye!"); title(""); break
             if command in commands: commands[command]()
             continue
@@ -336,6 +347,9 @@ def main():
                     print(styled("Added to context", "93m"))
             continue
 
+        use_fast = user_input.endswith(" fast")
+        if use_fast: user_input = user_input[:-5].strip()
+        current_model = fast_model if use_fast else model
         request = user_input
         while True:
             def read(p):
@@ -351,7 +365,7 @@ def main():
             current_time = now.strftime(f"%A {day}{suffix} of %B %Y, %H:%M %Z")
             system_prompt = SYSTEM_PROMPT + (f"\n\n### Project Instructions (AGENTS.md)\n{agents_md}" if agents_md else "")
             messages = [{"role": "system", "content": system_prompt}, {"role": "system", "content": f"System summary: {json.dumps(system_summary(), separators=(',',':'))}\n\nCurrent time: {current_time}"}] + history + [{"role": "user", "content": f"{context}\nRequest: {request}"}]
-            title("⏳ nanocoder"); full_response, interrupted = stream_chat(messages, model)
+            title("⏳ nanocoder"); full_response, interrupted = stream_chat(messages, current_model)
             if full_response is None: break
             response_content = full_response + ("\n\n[user interrupted]" if interrupted else "")
             history.extend([{"role": "user", "content": request}, {"role": "assistant", "content": response_content}])
