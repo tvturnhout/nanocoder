@@ -1,4 +1,4 @@
-VERSION = 48
+VERSION = 50
 TAGS = {"edit": "edit", "find": "find", "replace": "replace", "request": "request_files", "drop": "drop_files", "commit": "commit_message", "shell": "shell_command", "create": "create"}
 SYSTEM_PROMPT = f'You are a coding expert. Answer any questions the user might have. Only code if the user asks you to, and use this XML format:\n[{TAGS["edit"]} path="file.py"]\n[{TAGS["find"]}]lines to find[/{TAGS["find"]}]\n[{TAGS["replace"]}]new code[/{TAGS["replace"]}]\n[/{TAGS["edit"]}]\nThe [{TAGS["find"]}] text is replaced literally, so it must match exactly. Keep it short - only enough lines to be unambiguous. Split large changes into multiple small edits.\nTo delete, leave [{TAGS["replace"]}] empty. To create a new file: [{TAGS["create"]} path="new_file.py"]file content[/{TAGS["create"]}].\nTo request files (one path per line):\n[{TAGS["request"]}]\npath/file1.py\npath/file2.py\n[/{TAGS["request"]}]\nTo drop files from context (one path per line):\n[{TAGS["drop"]}]\npath/file.py\n[/{TAGS["drop"]}]\nTo run a shell command: [{TAGS["shell"]}]echo hi[/{TAGS["shell"]}]. The tool will ask the user to approve (y/n). After running, the shell output will be returned truncated (first 10 lines, then a TRUNCATED marker, then the last 40 lines; full output if <= 50 lines).\nWhen making edits provide a [{TAGS["commit"]}]...[/{TAGS["commit"]}].'.replace('[', '<').replace(']', '>')
 
@@ -30,45 +30,78 @@ def load_agents_md(root):
         except: pass
     return None
 
-def fmt_size(b):
-    for u in ['B','KB','MB','GB']: 
-        if b < 1024: return f"{b:.1f}{u}" if u != 'B' else f"{b}B"
-        b /= 1024
-    return f"{b:.1f}TB"
+MAX_FILE_SIZE = 100 * 1024  # 100KB
+MAX_LINE_LENGTH = 500  # characters per line
 
-def get_map(root, max_depth=3, max_items=80):
-    SKIP = {'.git'}
-    NO_DESCEND = {'node_modules', '__pycache__', 'venv', '.venv', '.tox', 'dist', 'build', '.eggs', '.mypy_cache', '.pytest_cache', '.ruff_cache', 'htmlcov', '.coverage', 'env', '.env', '.cache', 'vendor', 'bower_components'}
+def safe_read_file(path, root=None, confirm_large=False):
+    """Safely read a file with size, symlink, and special file checks. Returns (content, error_msg)."""
+    p = Path(path) if root is None else Path(root, path)
+    if not p.exists(): return None, "not found"
+    # Check for symlinks
+    if p.is_symlink():
+        try:
+            target = p.resolve()
+            root_path = Path(root).resolve() if root else Path.cwd().resolve()
+            if not str(target).startswith(str(root_path)):
+                return None, f"symlink points outside repo: {target}"
+        except (OSError, ValueError) as e:
+            return None, f"symlink error: {e}"
+    # Check for special files (not regular files)
+    try:
+        stat_result = p.stat()
+        import stat
+        mode = stat_result.st_mode
+        if not stat.S_ISREG(mode):
+            return None, "special file (not regular)"
+    except OSError as e:
+        return None, f"cannot stat: {e}"
+    # Check file size
+    try:
+        size = p.stat().st_size
+        if size > MAX_FILE_SIZE:
+            size_kb = size / 1024
+            size_str = f"{size_kb:.1f}KB" if size_kb < 1024 else f"{size_kb/1024:.1f}MB"
+            if confirm_large:
+                print(f"{styled(f'Warning: {path} is {size_str} (>{MAX_FILE_SIZE//1024}KB)', '93m')}")
+                try:
+                    answer = input("Load anyway? (y/n): ").strip().lower()
+                except (EOFError, KeyboardInterrupt):
+                    print()
+                    answer = "n"
+                if answer != "y":
+                    return None, f"skipped (too large: {size_str})"
+            else:
+                return None, f"file too large: {size_str}"
+    except OSError as e:
+        return None, f"cannot check size: {e}"
+    # Try to read the file
+    try:
+        content = p.read_text()
+        return content if content else "[empty]", None
+    except PermissionError:
+        return None, "permission denied"
+    except UnicodeDecodeError:
+        return None, "binary/not UTF-8"
+    except OSError as e:
+        return None, f"read error: {e}"
+
+def get_map(root, max_files=100):
     BINARY_EXT = {'.png','.jpg','.jpeg','.gif','.ico','.webp','.bmp','.mp3','.mp4','.wav','.avi','.mov','.zip','.tar','.gz','.rar','.7z','.pdf','.exe','.dll','.so','.dylib','.pyc','.woff','.woff2','.ttf','.eot'}
-    output, count = [f"cwd: {root}"], 0
-    for dirpath, dirnames, filenames in os.walk(root, topdown=True):
-        depth = 0 if dirpath == root else dirpath[len(root)+1:].count(os.sep) + 1
-        if depth > max_depth: dirnames[:] = []; continue
-        rel = os.path.relpath(dirpath, root)
-        prefix = "" if rel == "." else rel + "/"
-        dirnames[:] = [d for d in sorted(dirnames) if d not in SKIP]
-        for d in dirnames[:]:
-            if count >= max_items: dirnames[:] = []; break
-            if d in NO_DESCEND:
-                try: n = sum(1 for _ in Path(dirpath, d).rglob("*") if _.is_file())
-                except: n = "?"
-                output.append(f"{prefix}{d}/ [{n} files, excluded]"); dirnames.remove(d); count += 1
-            elif depth >= max_depth - 1:
-                try: n = sum(1 for _ in Path(dirpath, d).rglob("*") if _.is_file())
-                except: n = "?"
-                output.append(f"{prefix}{d}/ [{n} files]"); dirnames.remove(d); count += 1
-        for f in sorted(filenames):
-            if count >= max_items: break
-            p = Path(dirpath, f)
-            try: size = fmt_size(p.stat().st_size)
-            except: size = "?"
-            if p.suffix.lower() in BINARY_EXT: output.append(f"{prefix}{f} ({size}, binary)"); count += 1; continue
-            defs = ""
-            if f.endswith('.py') and depth <= 1:
-                try: defs = ": " + ", ".join(n.name for n in ast.parse(p.read_text()).body if isinstance(n, (ast.FunctionDef, ast.ClassDef)))[:60]
-                except: pass
-            output.append(f"{prefix}{f} ({size}){defs}"); count += 1
-        if count >= max_items: output.append(f"[truncated, showing {count} items]"); break
+    EXCLUDE_DIRS = {'.git', 'node_modules', '__pycache__', 'venv', '.venv', '.tox', 'dist', 'build', '.eggs', '.mypy_cache', '.pytest_cache', '.ruff_cache', 'htmlcov', '.coverage', 'env', '.env'}
+    files = (run(f"git -C {root} ls-files") or "").splitlines()
+    if not files:
+        files = [str(p.relative_to(root)) for p in Path(root).rglob("*") if p.is_file() and not any(ex in p.parts for ex in EXCLUDE_DIRS)]
+    files = sorted(files, key=lambda f: (f.count('/'), f))[:max_files]
+    output = []
+    for f in files:
+        p = Path(root, f)
+        if not p.exists(): continue
+        if p.suffix.lower() in BINARY_EXT: output.append(f"{f} [binary]"); continue
+        defs = ""
+        if f.endswith('.py'):
+            try: defs = ": " + ", ".join(n.name for n in ast.parse(p.read_text()).body if isinstance(n, (ast.FunctionDef, ast.ClassDef)))[:80]
+            except: pass
+        output.append(f"{f}{defs}")
     return "\n".join(output)
 
 TAG_COLORS = {TAGS["shell"]: '46;30m', TAGS["find"]: '41;37m', TAGS["replace"]: '42;30m', TAGS["commit"]: '44;37m', TAGS["request"]: '45;37m', TAGS["drop"]: '45;37m', TAGS["edit"]: '43;30m', TAGS["create"]: '43;30m'}
@@ -143,33 +176,11 @@ def render_md(text):
             result.append(part)
     return ''.join(result)
 
-def truncate_content(content, path="", max_tokens=70000, max_line_len=1000):
-    """Truncate content: shorten long lines, then cap total size. ~4 chars/token."""
-    max_chars = max_tokens * 4
-    lines = content.split('\n')
-    # Truncate long lines
-    for i, ln in enumerate(lines):
-        if len(ln) > max_line_len:
-            ext = Path(path).suffix.lower() if path else ""
-            if ext in ('.min.js', '.min.css') or (ext == '.json' and len(ln) > 5000):
-                lines[i] = f"[{ext or 'long'} line, {len(ln)} chars]"
-            else:
-                lines[i] = f"{ln[:max_line_len//2]}[…{len(ln)}c…]{ln[-max_line_len//4:]}"
-    content = '\n'.join(lines)
-    # Cap total size with head + tail
-    if len(content) > max_chars:
-        head_size, tail_size = int(max_chars * 0.8), int(max_chars * 0.15)
-        content = f"{content[:head_size]}\n[…truncated, showing {max_chars//1000}k of {len(content)//1000}k chars…]\n{content[-tail_size:]}"
-    return content
-
-def truncate(lines, max_lines=50, max_char=500, max_total=20000):
-    lines = [ln if len(ln) <= max_char else f"{ln[:max_char//2]}[…{len(ln)}c…]{ln[-max_char//4:]}" for ln in lines]
-    if len(lines) > max_lines: lines = lines[:10] + [f"[…{len(lines)} lines…]"] + lines[-40:]
-    out, size = [], 0
-    for ln in lines:
-        if size + len(ln) > max_total: out.append(f"[…truncated, {sum(len(l) for l in lines)}c total]"); break
-        out.append(ln); size += len(ln)
-    return out
+def truncate(lines, n=50, max_line_len=MAX_LINE_LENGTH):
+    def trunc_line(line):
+        return line if len(line) <= max_line_len else line[:max_line_len] + "..."
+    lines = [trunc_line(line) for line in lines]
+    return lines if len(lines) <= n else lines[:10] + ["[TRUNCATED]"] + lines[-40:]
 
 def run_shell_interactive(cmd):
     output_lines, process = [], subprocess.Popen(cmd, shell=True, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
@@ -295,8 +306,7 @@ def apply_edits(text, root):
 def main():
     repo_root, context_files, history = run("git rev-parse --show-toplevel") or os.getcwd(), set(), []
     model = os.getenv("OPENAI_MODEL", "gpt-4o")
-    fast_model = os.getenv("OPENAI_FAST_MODEL", "gpt-4o-mini")
-    print(f"{styled(' nanocoder v' + str(VERSION) + ' ', '47;30m')} {styled(' ' + fast_model + ' ', '47;30m')} {styled(' ! for ' + model + ' ', '47;30m')} {styled(' ctrl+d to send ', '47;30m')}")
+    print(f"{styled(' nanocoder v' + str(VERSION) + ' ', '47;30m')} {styled(' ' + model + ' ', '47;30m')} {styled(' ctrl+d to send ', '47;30m')}")
     while True:
         title("❓ nanocoder"); print(f"\a{styled('❯ ', '1;34m')}", end="", flush=True); input_lines = []
         try:
@@ -307,17 +317,18 @@ def main():
         if not (user_input := "\n".join(input_lines).strip()): continue
         if user_input.startswith("/"):
             command, _, arg = user_input.partition(" ")
-            def cmd_add(): found = [f for f in glob.glob(arg, root_dir=repo_root, recursive=True) if Path(repo_root, f).is_file()]; context_files.update(found); print(f"Added {len(found)} files")
-            def cmd_trim():
-                if not history: print("Nothing to trim."); return
-                summary_prompt = "Summarize this coding session very concisely (max 200 words): what files were created/modified, what was accomplished, what's in progress. Just the facts."
-                summary_msgs = [{"role": "system", "content": summary_prompt}] + history
-                print(styled("Generating summary...", "90m"))
-                summary, _ = stream_chat(summary_msgs, fast_model)
-                if summary:
-                    history.clear(); context_files.clear()
-                    history.append({"role": "user", "content": f"Session summary (continue from here):\n{summary}"})
-                    print(styled("History and context cleared. Summary preserved.", "93m"))
+            def cmd_add():
+                found = [f for f in glob.glob(arg, root_dir=repo_root, recursive=True) if Path(repo_root, f).is_file()]
+                added, skipped = [], []
+                for f in found:
+                    content, error = safe_read_file(f, repo_root, confirm_large=True)
+                    if error:
+                        print(styled(f"Skip {f}: {error}", "31m"))
+                        skipped.append(f)
+                    else:
+                        added.append(f)
+                context_files.update(added)
+                print(f"Added {len(added)} files" + (f", skipped {len(skipped)}" if skipped else ""))
             def cmd_export():
                 url = "https://raw.githubusercontent.com/koenvaneijk/nanocoder/refs/heads/main/nanocoder.py"
                 env_vars = {}
@@ -329,12 +340,12 @@ def main():
                 print(f"\n{styled('Copy this command:', '1m')}\n\n{cmd}\n")
                 print(styled(f"Size: {len(cmd)} chars", '90m'))
                 if any('API_KEY' in k for k in env_vars): print(styled("⚠ Warning: contains API key(s)!", '93m'))
-            commands = {"/add": cmd_add, "/drop": lambda: context_files.discard(arg), "/clear": lambda: (history.clear(), print("History cleared.")), "/undo": lambda: run("git reset --soft HEAD~1"), "/export": cmd_export, "/trim": cmd_trim, "/help": lambda: print("/add <glob> - Add files\n/drop <file> - Remove file\n/clear - Clear history\n/trim - Summarize and clear history\n/undo - Undo commit\n/export - Export as portable bash command\n/exit - Exit\n$<cmd> - Shell\nEnd with '!' for smart model")}
+            commands = {"/add": cmd_add, "/drop": lambda: context_files.discard(arg), "/clear": lambda: (history.clear(), print("History cleared.")), "/undo": lambda: run("git reset --soft HEAD~1"), "/export": cmd_export, "/help": lambda: print("/add <glob> - Add files\n/drop <file> - Remove file\n/clear - Clear history\n/undo - Undo commit\n/export - Export as portable bash command\n/exit - Exit\n!<cmd> - Shell")}
             if command == "/exit": print("Bye!"); title(""); break
             if command in commands: commands[command]()
             continue
 
-        if user_input.startswith("$"):
+        if user_input.startswith("!"):
             shell_cmd = user_input[1:].strip()
             if shell_cmd:
                 output_lines, exit_code = run_shell_interactive(shell_cmd)
@@ -342,21 +353,16 @@ def main():
                 try: answer = input("\aAdd to context? [t]runcated/[f]ull/[n]o: ").strip().lower()
                 except (EOFError, KeyboardInterrupt): print(); answer = "n"
                 if answer in ("t", "f"):
-                    output = "\n".join(truncate(output_lines) if answer == "t" else output_lines)
-                    history.append({"role": "user", "content": f"$ {shell_cmd}\nexit={exit_code}\n" + truncate_content(output, max_tokens=20000)})
+                    history.append({"role": "user", "content": f"$ {shell_cmd}\nexit={exit_code}\n" + "\n".join(truncate(output_lines) if answer == "t" else output_lines)})
                     print(styled("Added to context", "93m"))
             continue
 
-        use_smart = user_input.rstrip().endswith("!")
-        if use_smart: user_input = user_input.rstrip()[:-1].strip()
-        current_model = model if use_smart else fast_model
         request = user_input
         while True:
             def read(p):
-                f = Path(repo_root, p)
-                if not f.exists(): return ""
-                try: return truncate_content(f.read_text() or "[empty]", p)
-                except: return "[binary/unreadable]"
+                content, error = safe_read_file(p, repo_root, confirm_large=False)
+                if error: return f"[{error}]"
+                return content
             context = f"### Repo Map\n{get_map(repo_root)}\n### Files\n" + "\n".join(f"File: {f}\n```\n{read(f)}\n```" for f in context_files if Path(repo_root,f).exists())
             agents_md = load_agents_md(repo_root)
             now = datetime.datetime.now().astimezone()
@@ -365,7 +371,7 @@ def main():
             current_time = now.strftime(f"%A {day}{suffix} of %B %Y, %H:%M %Z")
             system_prompt = SYSTEM_PROMPT + (f"\n\n### Project Instructions (AGENTS.md)\n{agents_md}" if agents_md else "")
             messages = [{"role": "system", "content": system_prompt}, {"role": "system", "content": f"System summary: {json.dumps(system_summary(), separators=(',',':'))}\n\nCurrent time: {current_time}"}] + history + [{"role": "user", "content": f"{context}\nRequest: {request}"}]
-            title("⏳ nanocoder"); full_response, interrupted = stream_chat(messages, current_model)
+            title("⏳ nanocoder"); full_response, interrupted = stream_chat(messages, model)
             if full_response is None: break
             response_content = full_response + ("\n\n[user interrupted]" if interrupted else "")
             history.extend([{"role": "user", "content": request}, {"role": "assistant", "content": response_content}])
@@ -377,8 +383,12 @@ def main():
                 for filepath in content.strip().split('\n'):
                     filepath = filepath.strip()
                     if not filepath: continue
-                    if tag == TAGS["request"] and filepath not in context_files and Path(repo_root, filepath).exists():
-                        added_files.append(filepath)
+                    if tag == TAGS["request"] and filepath not in context_files:
+                        content, error = safe_read_file(filepath, repo_root, confirm_large=True)
+                        if error:
+                            print(styled(f"Cannot add {filepath}: {error}", "31m"))
+                        else:
+                            added_files.append(filepath)
                     elif tag == TAGS["drop"]:
                         context_files.discard(filepath)
             context_files.update(added_files)
@@ -399,7 +409,7 @@ def main():
                     try: answer = input("\aRun? (y/n): ").strip().lower()
                     except (EOFError, KeyboardInterrupt): print(); answer = "n"
                     if answer == "y":
-                        try: output_lines, exit_code = run_shell_interactive(cmd); results.append(f"$ {cmd}\nexit={exit_code}\n" + truncate_content("\n".join(truncate(output_lines)), max_tokens=20000))
+                        try: output_lines, exit_code = run_shell_interactive(cmd); results.append(f"$ {cmd}\nexit={exit_code}\n" + "\n".join(truncate(output_lines)))
                         except Exception as err: results.append(f"$ {cmd}\nerror: {err}")
                     else: denied = True; break
                 if denied: break
