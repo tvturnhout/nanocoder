@@ -90,7 +90,23 @@ def get_map(root, max_files=100):
     EXCLUDE_DIRS = {'.git', 'node_modules', '__pycache__', 'venv', '.venv', '.tox', 'dist', 'build', '.eggs', '.mypy_cache', '.pytest_cache', '.ruff_cache', 'htmlcov', '.coverage', 'env', '.env'}
     files = (run(f"git -C {root} ls-files") or "").splitlines()
     if not files:
-        files = [str(p.relative_to(root)) for p in Path(root).rglob("*") if p.is_file() and not any(ex in p.parts for ex in EXCLUDE_DIRS)]
+        result = []
+        root_path = Path(root)
+        def _walk(directory, depth=0):
+            if depth > 10: return
+            try: entries = sorted(directory.iterdir())
+            except (PermissionError, OSError): return
+            for entry in entries:
+                if entry.name in EXCLUDE_DIRS: continue
+                try:
+                    if entry.is_file(follow_symlinks=False):
+                        result.append(str(entry.relative_to(root_path)))
+                    elif entry.is_dir(follow_symlinks=False):
+                        _walk(entry, depth + 1)
+                except (PermissionError, OSError): continue
+                if len(result) >= max_files * 2: return
+        _walk(root_path)
+        files = result
     files = sorted(files, key=lambda f: (f.count('/'), f))[:max_files]
     output = []
     for f in files:
