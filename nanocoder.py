@@ -1,6 +1,6 @@
 VERSION = 50
 TAGS = {"edit": "edit", "find": "find", "replace": "replace", "request": "request_files", "drop": "drop_files", "commit": "commit_message", "shell": "shell_command", "create": "create"}
-SYSTEM_PROMPT = f'You are a coding expert. Answer any questions the user might have. Only code if the user asks you to, and use this XML format:\n[{TAGS["edit"]} path="file.py"]\n[{TAGS["find"]}]lines to find[/{TAGS["find"]}]\n[{TAGS["replace"]}]new code[/{TAGS["replace"]}]\n[/{TAGS["edit"]}]\nThe [{TAGS["find"]}] text is replaced literally, so it must match exactly. Keep it short - only enough lines to be unambiguous. Split large changes into multiple small edits.\nTo delete, leave [{TAGS["replace"]}] empty. To create a new file: [{TAGS["create"]} path="new_file.py"]file content[/{TAGS["create"]}].\nTo request files (one path per line):\n[{TAGS["request"]}]\npath/file1.py\npath/file2.py\n[/{TAGS["request"]}]\nTo drop files from context (one path per line):\n[{TAGS["drop"]}]\npath/file.py\n[/{TAGS["drop"]}]\nTo run a shell command: [{TAGS["shell"]}]echo hi[/{TAGS["shell"]}]. The tool will ask the user to approve (y/n). After running, the shell output will be returned truncated (first 10 lines, then a TRUNCATED marker, then the last 40 lines; full output if <= 50 lines).\nWhen making edits provide a [{TAGS["commit"]}]...[/{TAGS["commit"]}].'.replace('[', '<').replace(']', '>')
+SYSTEM_PROMPT = f'You are a coding expert. Answer any questions the user might have. Only code if the user asks you to, and use this XML format:\n[{TAGS["edit"]} path="file.py"]\n[{TAGS["find"]}]lines to find[/{TAGS["find"]}]\n[{TAGS["replace"]}]new code[/{TAGS["replace"]}]\n[/{TAGS["edit"]}]\nThe [{TAGS["find"]}] text is replaced literally, so it must match exactly. Keep it short - only enough lines to be unambiguous. Split large changes into multiple small edits.\nTo delete, leave [{TAGS["replace"]}] empty. To create a new file: [{TAGS["create"]} path="new_file.py"]file content[/{TAGS["create"]}].\nTo request files (one path per line):\n[{TAGS["request"]}]\npath/file1.py\npath/file2.py\n[/{TAGS["request"]}]\nTo drop files from context (one path per line):\n[{TAGS["drop"]}]\npath/file.py\n[/{TAGS["drop"]}]\nTo run a shell command: [{TAGS["shell"]}]echo hi[/{TAGS["shell"]}]. The tool will ask the user to approve (y/n). After running, the shell output will be returned truncated (first 10 lines, then a TRUNCATED marker, then the last 40 lines; full output if <= 50 lines).\nWhen making edits provide a [{TAGS["commit"]}]...[/{TAGS["commit"]}].\nOnly use one [{TAGS["shell"]}] command per response. Wait for the result before running another.'.replace('[', '<').replace(']', '>')
 
 import ast, difflib, glob, json, os, re, struct, subprocess, sys, threading, time, urllib.request, urllib.error, platform, shutil, datetime
 from pathlib import Path
@@ -401,19 +401,16 @@ def main():
             tok_bg = '47;30m' if tok_total < 80000 else '43;30m' if tok_total < 120000 else '41;37m'
             print(styled(f" ~{tok_hist//1000}k hist, ~{tok_files//1000}k files ", tok_bg))
             if added_files: print(styled(f"+{len(added_files)} file(s)", "93m")); request = f"Added files: {', '.join(added_files)}. Please continue."; continue
-            shell_commands = re.findall(rf'<{TAGS["shell"]}>(.*?)</{TAGS["shell"]}>', full_response, re.DOTALL)
-            if shell_commands:
-                results, denied = [], False
-                for cmd in [s.strip() for s in shell_commands]:
-                    print(f"{styled(cmd, '1m')}\n"); title("❓ nanocoder")
-                    try: answer = input("\aRun? (y/n): ").strip().lower()
-                    except (EOFError, KeyboardInterrupt): print(); answer = "n"
-                    if answer == "y":
-                        try: output_lines, exit_code = run_shell_interactive(cmd); results.append(f"$ {cmd}\nexit={exit_code}\n" + "\n".join(truncate(output_lines)))
-                        except Exception as err: results.append(f"$ {cmd}\nerror: {err}")
-                    else: denied = True; break
-                if denied: break
-                request = "Shell results:\n" + "\n\n".join(results) + "\nPlease continue."; continue
+            shell_match = re.search(rf'<{TAGS["shell"]}>(.*?)</{TAGS["shell"]}>', full_response, re.DOTALL)
+            if shell_match:
+                cmd = shell_match.group(1).strip()
+                print(f"{styled(cmd, '1m')}\n"); title("❓ nanocoder")
+                try: answer = input("\aRun? (y/n): ").strip().lower()
+                except (EOFError, KeyboardInterrupt): print(); answer = "n"
+                if answer == "y":
+                    try: output_lines, exit_code = run_shell_interactive(cmd); result = f"$ {cmd}\nexit={exit_code}\n" + "\n".join(truncate(output_lines))
+                    except Exception as err: result = f"$ {cmd}\nerror: {err}"
+                    request = f"Shell result:\n{result}\nPlease continue."; continue
             break
 
 if __name__ == "__main__": main()
